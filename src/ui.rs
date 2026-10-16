@@ -109,7 +109,8 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Scrolls `offset` just enough to keep `selected` within `height` rows.
 fn follow(offset: &mut usize, selected: usize, height: usize) {
-    if selected < *offset {
+    // With no room at all, the selection still has to be at or past the offset.
+    if selected < *offset || height == 0 {
         *offset = selected;
     } else if selected >= *offset + height {
         *offset = selected + 1 - height;
@@ -492,6 +493,18 @@ mod tests {
             .map(|p| buf[p].symbol().to_owned())
             .collect();
         assert_eq!(reversed, "12");
+    }
+
+    #[test]
+    fn tiny_terminals_do_not_crash() {
+        let repo = titans();
+        let mut app = App::new();
+        app.update(Msg::Commits(0, repo.log()));
+        press(&mut app, KeyCode::Down);
+        for (w, h) in [(0, 0), (10, 3), (100, 5)] {
+            let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+        }
     }
 
     #[test]

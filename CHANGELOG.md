@@ -7,6 +7,10 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+### Fixed
+
+- levi no longer crashes when the terminal is too small to show any list rows.
+
 ## [0.5.0] - 2026-10-16
 
 ### Added
