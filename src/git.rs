@@ -1,6 +1,7 @@
 //! Thin layer over the `git` CLI: repo discovery, streaming log, per-file diffs.
 
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Output, Stdio};
 use std::sync::{Arc, Mutex};
@@ -8,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result, anyhow, bail};
 
 use crate::query::Source;
+use crate::words;
 
 /// Separates commit records in the log stream. Can't appear in a NUL-delimited field
 /// produced by `-z`, and practically never appears in commit subjects.
@@ -505,8 +507,10 @@ impl Drop for CodeStream {
     }
 }
 
-/// Unified diff of one file in one commit (merges: against the first parent).
-pub fn diff(root: &Path, sha: &str, file: &FileChange) -> Result<String> {
+/// What `git show` prints for one file of a commit: the header and message, a
+/// NUL, then the file's unified diff (merges: against the first parent). With no
+/// file, just the message.
+pub fn diff(root: &Path, sha: &str, file: Option<&FileChange>) -> Result<String> {
     let mut cmd = git(root);
     cmd.args([
         "show",
@@ -514,20 +518,31 @@ pub fn diff(root: &Path, sha: &str, file: &FileChange) -> Result<String> {
         "--no-ext-diff",
         "--no-show-signature",
         "--diff-merges=first-parent",
-        "--patch",
-        "--format=",
-        sha,
-        "--",
+        // Laid out like `git show`; the date follows the user's `log.date`.
+        // The NUL must come after `%w` is reset, or the wrapping drops it.
+        "--format=commit %H%nAuthor: %an <%ae>%nDate:   %ad%n%n%w(0,4,4)%B%w(0,0,0)%x00",
     ]);
-    if let Some(old) = &file.old_path {
-        cmd.arg(old);
+    match file {
+        Some(file) => {
+            cmd.args(["--patch", sha, "--"]);
+            if let Some(old) = &file.old_path {
+                cmd.arg(old);
+            }
+            cmd.arg(&file.path);
+        }
+        None => {
+            cmd.args(["--no-patch", sha]);
+        }
     }
-    cmd.arg(&file.path);
     Ok(String::from_utf8_lossy(&run(&mut cmd)?).into_owned())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineKind {
+    /// `commit`, `Author:` and `Date:` above the message.
+    Meta,
+    /// The commit message, indented like `git show` does.
+    Message,
     /// `diff --git`, `index`, `---`/`+++`, mode and rename lines.
     Header,
     Hunk,
@@ -540,33 +555,61 @@ pub enum LineKind {
 pub struct DiffLine {
     pub kind: LineKind,
     pub text: String,
+    /// Byte ranges of `text` that changed within the line (see `words`).
+    pub emph: Vec<Range<usize>>,
 }
 
-/// Classifies each line of a unified diff, expanding tabs for display.
+/// Classifies each line of `diff`'s output, expanding tabs for display, and
+/// marks the words that changed in edited lines.
 pub fn parse_diff(text: &str) -> Vec<DiffLine> {
+    let (message, patch) = text.split_once('\0').unwrap_or(("", text));
+    let line = |kind, raw: &str| DiffLine {
+        kind,
+        text: raw.replace('\t', "    ").replace('\r', ""),
+        emph: Vec::new(),
+    };
+    // The header ends at the first blank line; the message follows.
+    let mut in_message = false;
+    let mut lines: Vec<DiffLine> = message
+        .trim_end()
+        .lines()
+        .map(|raw| {
+            in_message |= raw.trim().is_empty();
+            let kind = if in_message {
+                LineKind::Message
+            } else {
+                LineKind::Meta
+            };
+            line(kind, raw.trim_end())
+        })
+        .collect();
+    let patch = patch.trim_start_matches('\n');
+    if !lines.is_empty() && !patch.is_empty() {
+        lines.push(line(LineKind::Message, ""));
+    }
+
     // `---`/`+++` are headers only before the first hunk, so track position.
     let mut in_hunk = false;
-    text.lines()
-        .map(|raw| {
-            let kind = if raw.starts_with("diff --git") {
-                in_hunk = false;
-                LineKind::Header
-            } else if raw.starts_with("@@") {
-                in_hunk = true;
-                LineKind::Hunk
-            } else if !in_hunk {
-                LineKind::Header
-            } else if raw.starts_with('+') {
-                LineKind::Added
-            } else if raw.starts_with('-') {
-                LineKind::Removed
-            } else {
-                LineKind::Context
-            };
-            let text = raw.replace('\t', "    ").replace('\r', "");
-            DiffLine { kind, text }
-        })
-        .collect()
+    lines.extend(patch.lines().map(|raw| {
+        let kind = if raw.starts_with("diff --git") {
+            in_hunk = false;
+            LineKind::Header
+        } else if raw.starts_with("@@") {
+            in_hunk = true;
+            LineKind::Hunk
+        } else if !in_hunk {
+            LineKind::Header
+        } else if raw.starts_with('+') {
+            LineKind::Added
+        } else if raw.starts_with('-') {
+            LineKind::Removed
+        } else {
+            LineKind::Context
+        };
+        line(kind, raw)
+    }));
+    words::mark(&mut lines);
+    lines
 }
 
 #[cfg(test)]
@@ -606,7 +649,7 @@ mod tests {
             ]
         );
 
-        let d = diff(repo.path(), &c.sha, &c.files[0]).unwrap();
+        let d = diff(repo.path(), &c.sha, Some(&c.files[0])).unwrap();
         assert!(d.contains("new file mode"));
         assert!(d.contains("+a"));
         assert!(!d.contains("dir/b.txt"));
@@ -648,7 +691,7 @@ mod tests {
         assert_eq!(file.path, "new.txt");
         assert_eq!(file.old_path.as_deref(), Some("old.txt"));
 
-        let d = diff(repo.path(), &commits[0].sha, file).unwrap();
+        let d = diff(repo.path(), &commits[0].sha, Some(file)).unwrap();
         assert!(d.contains("rename from old.txt"), "{d}");
         assert!(d.contains("rename to new.txt"), "{d}");
     }
@@ -686,7 +729,7 @@ mod tests {
         assert!(merge.subject.starts_with("Merge branch 'feature'"));
         assert_eq!(merge.files, vec![change(Status::Added, "feature.txt")]);
 
-        let d = diff(repo.path(), &merge.sha, &merge.files[0]).unwrap();
+        let d = diff(repo.path(), &merge.sha, Some(&merge.files[0])).unwrap();
         assert!(d.contains("+feature"), "{d}");
     }
 
@@ -708,7 +751,7 @@ mod tests {
         );
 
         // `*` must be taken literally, not as a glob matching globby.txt.
-        let d = diff(repo.path(), &c.sha, &c.files[0]).unwrap();
+        let d = diff(repo.path(), &c.sha, Some(&c.files[0])).unwrap();
         assert!(d.contains("+g"));
         assert!(!d.contains("nope"), "{d}");
     }
@@ -765,7 +808,7 @@ mod tests {
             .collect::<Result<_>>()
             .unwrap();
         assert_eq!(commits[0].subject, "in a bare repo");
-        let d = diff(&root, &commits[0].sha, &commits[0].files[0]).unwrap();
+        let d = diff(&root, &commits[0].sha, Some(&commits[0].files[0])).unwrap();
         assert!(d.contains("+a"));
     }
 
@@ -819,6 +862,39 @@ mod tests {
             [Header, Header, Header, Hunk, Removed, Added, Context]
         );
         assert_eq!(parse_diff(text)[6].text, " ctx    x");
+    }
+
+    #[test]
+    fn parse_diff_puts_the_message_first() {
+        let text = "commit abc\nAuthor: Levi <l@s>\n\n    subject\n\n    body\n\0\ndiff --git a/x b/x\n@@ -1 +1 @@\n-a = 1\n+a = 2\n";
+        let lines = parse_diff(text);
+        let kinds: Vec<_> = lines.iter().map(|l| l.kind).collect();
+        use LineKind::*;
+        assert_eq!(
+            kinds,
+            [
+                Meta, Meta, Message, Message, Message, Message, Message, Header, Hunk, Removed,
+                Added
+            ]
+        );
+        assert_eq!(lines[3].text, "    subject");
+        assert_eq!(lines[6].text, "", "a blank line before the diff");
+        let marked: Vec<_> = lines[10]
+            .emph
+            .iter()
+            .map(|r| &lines[10].text[r.clone()])
+            .collect();
+        assert_eq!(marked, ["2"], "changed words are marked");
+
+        let repo = Repo::new();
+        repo.write("a", "a\n");
+        repo.commit("first\n\nwith a body");
+        let c = &repo.log()[0];
+        let lines = parse_diff(&diff(repo.path(), &c.sha, None).unwrap());
+        let texts: Vec<_> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts[0], format!("commit {}", c.sha));
+        assert_eq!(texts[1], "Author: Levi <levi@scouts>");
+        assert_eq!(texts[3..], ["", "    first", "", "    with a body"]);
     }
 
     #[test]

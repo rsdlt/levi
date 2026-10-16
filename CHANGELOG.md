@@ -7,6 +7,13 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+### Added
+
+- The diff pane opens with the commit's header and full message, laid out like `git show`.
+  Commits without file changes show their message too.
+- In edited lines, only the words that changed are highlighted (reverse video), like git's
+  `diff-highlight`.
+
 ## [0.4.0] - 2026-10-16
 
 ### Changed

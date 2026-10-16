@@ -373,7 +373,7 @@ pub fn spawn_diff(root: PathBuf, tx: Sender<Msg>) -> Sender<DiffRequest> {
             while let Ok(newer) = req_rx.try_recv() {
                 req = newer;
             }
-            let result = git::diff(&root, &req.sha, &req.file)
+            let result = git::diff(&root, &req.sha, req.file.as_ref())
                 .map(|text| git::parse_diff(&text))
                 .map_err(|e| e.to_string());
             if tx.send(Msg::Diff(req.key(), result)).is_err() {

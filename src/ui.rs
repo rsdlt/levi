@@ -1,5 +1,7 @@
 //! Rendering: search bar on top, commits | files | diff below.
 
+use std::ops::Range;
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -7,7 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 
 use crate::app::{App, DiffView, Focus};
-use crate::git::{LineKind, Status};
+use crate::git::{DiffLine, LineKind, Status};
 use crate::query::{Source, find_code};
 
 const ACCENT: Color = Color::Cyan;
@@ -278,39 +280,57 @@ fn draw_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = pane(&title, app.focus == Focus::Diff);
     app.diff_height = block.inner(area).height as usize;
 
-    let lines: Vec<Line> = match app.diff() {
+    let pattern = app.code.as_ref().map(|c| c.pattern.as_str());
+    let mut lines: Vec<Line> = match app.diff() {
         DiffView::Ready(lines) => lines
             .iter()
             .skip(app.diff_scroll)
             .take(app.diff_height)
-            .map(|l| match &app.code {
-                Some(code) => code_highlighted(&l.text, &code.pattern, line_style(l.kind)),
-                None => Line::styled(l.text.as_str(), line_style(l.kind)),
-            })
+            .map(|l| diff_line(l, pattern))
             .collect(),
         DiffView::Failed(err) => vec![Line::styled(err, Color::Red)],
         DiffView::Loading => vec![Line::styled("loading…", Style::new().dim())],
-        DiffView::Empty if app.commit().is_some() => {
-            vec![Line::styled("no file changes", Style::new().dim())]
-        }
         DiffView::Empty => vec![],
     };
+    if app.commit().is_some() && app.file().is_none() && lines.len() < app.diff_height {
+        lines.push(Line::default());
+        lines.push(Line::styled("no file changes", Style::new().dim()));
+    }
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-/// A diff line with every occurrence of the code-search text marked.
-fn code_highlighted<'a>(text: &'a str, pattern: &str, style: Style) -> Line<'a> {
-    let mut spans = Vec::new();
-    let mut at = 0;
-    for range in find_code(text, pattern) {
-        spans.push(Span::styled(&text[at..range.start], style));
-        spans.push(Span::styled(
-            &text[range.clone()],
-            style.patch(code_match()),
-        ));
-        at = range.end;
+/// A diff line with its changed words in reverse video, like `diff-highlight`,
+/// and every occurrence of the code-search text marked on top.
+fn diff_line<'a>(line: &'a DiffLine, pattern: Option<&str>) -> Line<'a> {
+    let text = line.text.as_str();
+    let base = line_style(line.kind);
+    let found = pattern.map_or_else(Vec::new, |p| find_code(text, p));
+    if line.emph.is_empty() && found.is_empty() {
+        return Line::styled(text, base);
     }
-    spans.push(Span::styled(&text[at..], style));
+    let mut cuts: Vec<usize> = line
+        .emph
+        .iter()
+        .chain(&found)
+        .flat_map(|r| [r.start, r.end])
+        .chain([0, text.len()])
+        .collect();
+    cuts.sort_unstable();
+    cuts.dedup();
+    let within = |ranges: &[Range<usize>], at: usize| ranges.iter().any(|r| r.contains(&at));
+    let spans: Vec<Span> = cuts
+        .windows(2)
+        .map(|w| {
+            let style = if within(&found, w[0]) {
+                base.patch(code_match())
+            } else if within(&line.emph, w[0]) {
+                base.add_modifier(Modifier::REVERSED)
+            } else {
+                base
+            };
+            Span::styled(&text[w[0]..w[1]], style)
+        })
+        .collect();
     Line::from(spans)
 }
 
@@ -323,6 +343,8 @@ fn code_match() -> Style {
 
 fn line_style(kind: LineKind) -> Style {
     match kind {
+        LineKind::Meta => Style::new().fg(Color::Yellow),
+        LineKind::Message => Style::new(),
         LineKind::Header => Style::new().dim().bold(),
         LineKind::Hunk => Style::new().fg(ACCENT),
         LineKind::Added => Style::new().fg(Color::Green),
@@ -343,7 +365,7 @@ mod tests {
 
     fn render(app: &mut App) -> String {
         app.settle();
-        let mut terminal = Terminal::new(TestBackend::new(100, 14)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
         terminal.draw(|f| draw(f, app)).unwrap();
         let buf = terminal.backend().buffer();
         let rows: Vec<String> = (0..buf.area.height)
@@ -366,7 +388,7 @@ mod tests {
     /// Plays the diff worker's part synchronously.
     fn serve_diffs(app: &mut App, repo: &Repo) {
         while let Some(req) = app.take_diff_request() {
-            let result = git::diff(repo.path(), &req.sha, &req.file)
+            let result = git::diff(repo.path(), &req.sha, req.file.as_ref())
                 .map(|text| git::parse_diff(&text))
                 .map_err(|e| e.to_string());
             app.update(Msg::Diff(req.key(), result));
@@ -428,6 +450,48 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         let sha = app.commit().unwrap().sha.clone();
         assert!(matches!(app.exit, Some(Exit::Pick(ref s)) if *s == sha));
+    }
+
+    #[test]
+    fn diff_starts_with_the_commit_message() {
+        let repo = Repo::new();
+        repo.write("a.rs", "let x = foo(1, a);\n");
+        repo.commit("first");
+        repo.write("a.rs", "let x = foo(2, a);\n");
+        repo.commit("give it a two\n\nOne was never enough.");
+        repo.commit("an empty one");
+        let mut app = App::new();
+        app.update(Msg::Commits(0, repo.log()));
+        app.update(Msg::LogDone(0, Ok(())));
+
+        // A commit without files still shows its message.
+        serve_diffs(&mut app, &repo);
+        let screen = render(&mut app);
+        println!("{screen}");
+        assert!(screen.contains("Author: Levi <levi@scouts>"));
+        assert!(screen.contains("    an empty one"));
+        assert!(screen.contains("no file changes"));
+
+        press(&mut app, KeyCode::Down);
+        serve_diffs(&mut app, &repo);
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let rows: Vec<String> = (0..buf.area.height)
+            .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+        let row = |text: &str| rows.iter().position(|r| r.contains(text)).unwrap();
+        assert!(row("    give it a two") < row("    One was never enough."));
+        assert!(row("One was never enough.") < row("+let x = foo(2, a);"));
+
+        // In the diff lines, only the changed word is in reverse video.
+        let reversed: String = (0..buf.area.height)
+            .filter(|&y| rows[y as usize].contains("let x = foo("))
+            .flat_map(|y| (0..buf.area.width).map(move |x| (x, y)))
+            .filter(|&p| buf[p].modifier.contains(Modifier::REVERSED))
+            .map(|p| buf[p].symbol().to_owned())
+            .collect();
+        assert_eq!(reversed, "12");
     }
 
     #[test]
@@ -538,8 +602,8 @@ mod tests {
         let screen = render(&mut app);
         assert!(screen.contains("commit number 9"), "selected row visible");
         assert!(!screen.contains("commit number 29"), "top scrolled away");
-        // 14 rows: 3 for search, 2 borders, 9 list rows.
-        assert_eq!(app.commit_offset, 20 + 1 - 9);
+        // 24 rows: 3 for search, 2 borders, 19 list rows.
+        assert_eq!(app.commit_offset, 20 + 1 - 19);
     }
 
     #[test]

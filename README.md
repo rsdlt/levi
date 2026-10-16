@@ -98,13 +98,15 @@ and the old search is dropped on the spot.
   while you're already browsing, and diffs load in the background. git.git, with 82k commits,
   is his Beast Titan. The first screen lands in 40 ms, the whole history in under a second,
   and every search takes 5–12 ms, so it's over before the boulders start flying.
-- **Small.** About 1,100 lines of Rust (not counting tests) and a 1.6 MB binary. Short, and
-  still the strongest.
+- **Small.** About 2,300 lines of Rust (not counting tests, comments or blank lines) and a
+  1.6 MB binary. Short, and still the strongest.
 - **Relentless.** `/c` hunts through every diff in history on every core at once, and stops
   the moment you change your mind.
 - **Precise.** It shows the current branch, newest first. Merge commits are diffed against their
   first parent. A sha search matches only real prefixes, so `add` doesn't fuzzy-match half
-  your hashes.
+  your hashes. Each diff opens with the commit's full message, laid out like `git show`, and in
+  an edited line only the words that changed are lit, like git's `diff-highlight`. No squinting
+  at two lines to find the one character that moved.
 - **Clean.** It uses your own `git`, so your config (rename detection, diff algorithm) applies.
   It doesn't touch your repository, and it leaves your terminal exactly as it found it, even if
   it crashes. He'd never leave a mess.

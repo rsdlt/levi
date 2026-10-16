@@ -17,7 +17,7 @@ pub const CODE_DEBOUNCE: Duration = Duration::from_millis(300);
 /// Lines kept above a code match when the diff jumps to it.
 const JUMP_CONTEXT: usize = 3;
 
-/// (commit sha, file path)
+/// (commit sha, file path), or an empty path for a commit without files.
 pub type DiffKey = (String, String);
 pub type DiffResult = Result<Vec<DiffLine>, String>;
 
@@ -98,13 +98,21 @@ pub struct LogRequest {
 
 pub struct DiffRequest {
     pub sha: String,
-    pub file: FileChange,
+    /// `None` for a commit without files: only its message is shown.
+    pub file: Option<FileChange>,
 }
 
 impl DiffRequest {
     pub fn key(&self) -> DiffKey {
-        (self.sha.clone(), self.file.path.clone())
+        diff_key(&self.sha, self.file.as_ref())
     }
+}
+
+fn diff_key(sha: &str, file: Option<&FileChange>) -> DiffKey {
+    (
+        sha.to_owned(),
+        file.map_or_else(String::new, |f| f.path.clone()),
+    )
 }
 
 pub enum DiffView<'a> {
@@ -478,10 +486,9 @@ impl App {
         self.settle();
         self.jump_to_code();
         let commit = self.commit()?;
-        let file = self.file()?;
         let req = DiffRequest {
             sha: commit.sha.clone(),
-            file: file.clone(),
+            file: self.file().cloned(),
         };
         let key = req.key();
         if self.requested.as_ref() == Some(&key) {
@@ -519,10 +526,10 @@ impl App {
     }
 
     pub fn diff(&self) -> DiffView<'_> {
-        let (Some(commit), Some(file)) = (self.commit(), self.file()) else {
+        let Some(commit) = self.commit() else {
             return DiffView::Empty;
         };
-        match self.diffs.get(&(commit.sha.clone(), file.path.clone())) {
+        match self.diffs.get(&diff_key(&commit.sha, self.file())) {
             None => DiffView::Loading,
             Some(Ok(lines)) => DiffView::Ready(lines),
             Some(Err(err)) => DiffView::Failed(err),

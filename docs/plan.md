@@ -25,7 +25,7 @@ Widths: ~25% / 20% / 55%. The diff pane gets the room because that's where readi
 | 4 | Uncommitted changes | **Out for now.** No working-tree pseudo-commit. |
 | 5 | Git backend | Shell out to the `git` CLI (no `git2`/`gix`): respects user config, no C build, small binary. |
 | 6 | Fuzzy matching | `nucleo-matcher` (fzf-compatible syntax: smart case, `^`, `$`, `'`, `!`). |
-| 7 | Diff rendering | Simple coloring (`+` green, `-` red, `@@` cyan, headers dim). No syntax highlighting in v1. |
+| 7 | Diff rendering | Simple coloring (`+` green, `-` red, `@@` cyan, headers dim), the commit message on top, and changed words in reverse video (see Diff pane). No syntax highlighting. |
 
 ## Git commands
 
@@ -35,9 +35,9 @@ All commands run as `git --literal-pathspecs` (so paths like `glob*.txt` aren't 
 - Log + files, one streaming pass:
   `git log --no-color --no-show-signature --diff-merges=first-parent --name-status -z --format=%x1e%H%x00%h%x00%an%x00%ar%x00%s`
   Each record: `\x1e` + NUL-separated header, then `\n` + `STATUS\0path\0` entries (`R`/`C` carry `old\0new\0`).
-- Diff on demand:
-  `git show --no-color --no-ext-diff --no-show-signature --diff-merges=first-parent --patch --format= <sha> -- [old] <path>`
-  (renames/copies: pass both old and new path so git pairs them)
+- Diff on demand, message included:
+  `git show --no-color --no-ext-diff --no-show-signature --diff-merges=first-parent --format=<header + message + NUL> --patch <sha> -- [old] <path>`
+  (renames/copies: pass both old and new path so git pairs them; a commit without files gets `--no-patch`)
 
 ## Search semantics
 
@@ -84,7 +84,25 @@ Details settled while building:
 
 `ratatui` (bundled `crossterm`), `nucleo-matcher`, `anyhow`, `lru` (or a small hand-rolled cache).
 
-## Code layout (~800 lines)
+## Diff pane
+
+- **Message on top.** The diff request's `git show` also prints the header and message
+  (`commit`, `Author:`, `Date:`, then `%w(0,4,4)%B`, like `git show`; the date honours
+  `log.date`), then a NUL, then the patch. Same process, same cache entry, so no extra latency.
+  The NUL goes after `%w(0,0,0)`: inside `%w` git drops it. A commit without files shows its
+  message and "no file changes".
+- **Changed words** (`src/words.rs`). In a block of removed lines followed by added ones, pairs
+  are taken in order (1st `-` with 1st `+`, …) and compared by token (words, whitespace runs,
+  single punctuation): shared ends are trimmed, the middle goes through an LCS. Changed tokens
+  render in reverse video, as `diff-highlight` does; a `/c` match still wins. A pair whose kept
+  (non-whitespace) bytes are under half the line is left unmarked, since lighting most of a line
+  says nothing.
+- **Bounded.** The LCS is quadratic, so each diff gets a budget of 1M table cells. Past it, or
+  for a pair that alone would exceed it, the whole middle between the shared ends is marked
+  (what `diff-highlight` does), which is linear. Runs on the diff worker, once per cached diff.
+  5,000 pairs of 200-word lines: 2 s unbounded, 39 ms now; 20k typical code pairs: 18 ms.
+
+## Code layout
 
 ```
 src/
@@ -94,6 +112,7 @@ src/
   filter.rs  – nucleo matching over commits + files, producing filtered views
   app.rs     – state: query, filtered views, selections, focus, scroll, diff LRU
   ui.rs      – layout and rendering of the 4 widgets
+  words.rs   – word-level marks for edited lines
   testutil.rs – throwaway git repos for tests
 tests/cli.rs – runs the binary: errors, flags, exit codes
 ```

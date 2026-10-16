@@ -3,6 +3,7 @@ mod filter;
 mod git;
 mod query;
 mod ui;
+mod words;
 mod worker;
 
 #[cfg(test)]
