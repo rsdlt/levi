@@ -6,10 +6,13 @@ use std::process::{Child, ChildStdout, Command, Output, Stdio};
 
 use anyhow::{Context, Result, anyhow, bail};
 
+use crate::query::Source;
+
 /// Separates commit records in the log stream. Can't appear in a NUL-delimited field
 /// produced by `-z`, and practically never appears in commit subjects.
 const RECORD_SEP: u8 = 0x1e;
-const LOG_FORMAT: &str = "--format=%x1e%H%x00%h%x00%an%x00%ar%x00%s";
+/// Reflog fields (`%gd`, `%gs`) come out empty outside reflog mode, so one parser serves both.
+const LOG_FORMAT: &str = "--format=%x1e%H%x00%h%x00%an%x00%ar%x00%s%x00%gd%x00%gs";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commit {
@@ -18,7 +21,17 @@ pub struct Commit {
     pub author: String,
     pub date: String,
     pub subject: String,
+    /// Set when the commit comes from walking the reflog.
+    pub reflog: Option<Reflog>,
     pub files: Vec<FileChange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reflog {
+    /// `HEAD@{3}`
+    pub selector: String,
+    /// `checkout: moving from main to fix`
+    pub action: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,12 +155,16 @@ fn parse_version(text: &str) -> Option<(u32, u32)> {
     Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
 }
 
-/// Starts `git log` for the current branch and returns a lazy stream of commits.
-/// Merges are diffed against their first parent.
-pub fn log(root: &Path) -> Result<LogStream> {
-    let mut child = git(root)
+/// Starts `git log` for the current branch (or walks HEAD's reflog) and returns a
+/// lazy stream of commits. Merges are diffed against their first parent.
+pub fn log(root: &Path, source: Source) -> Result<LogStream> {
+    let mut cmd = git(root);
+    cmd.arg("log");
+    if source == Source::Reflog {
+        cmd.arg("--walk-reflogs");
+    }
+    let mut child = cmd
         .args([
-            "log",
             "--no-color",
             "--no-show-signature",
             "--diff-merges=first-parent",
@@ -245,7 +262,7 @@ impl<R: BufRead> Iterator for Records<R> {
     }
 }
 
-/// Parses one record: `sha\0short\0author\0date\0subject\0` optionally followed by
+/// Parses one record: `sha\0short\0author\0date\0subject\0selector\0action\0`, optionally followed by
 /// `\nSTATUS\0path\0[path\0]...`.
 fn parse_record(record: &[u8]) -> Result<Commit> {
     let text = String::from_utf8_lossy(record);
@@ -261,8 +278,17 @@ fn parse_record(record: &[u8]) -> Result<Commit> {
         author: field("author")?.to_owned(),
         date: field("date")?.to_owned(),
         subject: field("subject")?.to_owned(),
+        reflog: None,
         files: Vec::new(),
     };
+    let selector = field("reflog selector")?;
+    let action = field("reflog action")?;
+    if !selector.is_empty() {
+        commit.reflog = Some(Reflog {
+            selector: selector.to_owned(),
+            action: action.to_owned(),
+        });
+    }
 
     let mut tokens = tokens
         .map(|t| t.trim_start_matches('\n'))
@@ -544,7 +570,10 @@ mod tests {
         repo.git(&["clone", "-q", "--bare", ".", bare_path.to_str().unwrap()]);
 
         let root = preflight(&bare_path).unwrap();
-        let commits: Vec<_> = log(&root).unwrap().collect::<Result<_>>().unwrap();
+        let commits: Vec<_> = log(&root, Source::Log)
+            .unwrap()
+            .collect::<Result<_>>()
+            .unwrap();
         assert_eq!(commits[0].subject, "in a bare repo");
         let d = diff(&root, &commits[0].sha, &commits[0].files[0]).unwrap();
         assert!(d.contains("+a"));
@@ -564,7 +593,7 @@ mod tests {
 
     #[test]
     fn parses_copy_records() {
-        let raw = b"\x1esha1\0s1\0Levi\0now\0copy\0\nC75\0src.rs\0dst.rs\0M\0x\0\x1esha2\0s2\0Erwin\0then\0root\0";
+        let raw = b"\x1esha1\0s1\0Levi\0now\0copy\0\0\0\nC75\0src.rs\0dst.rs\0M\0x\0\x1esha2\0s2\0Erwin\0then\0root\0HEAD@{1}\0commit (initial): root\0";
         let commits: Vec<_> = Records::new(&raw[..]).collect::<Result<_>>().unwrap();
         assert_eq!(commits.len(), 2);
         assert_eq!(
@@ -578,8 +607,16 @@ mod tests {
                 change(Status::Modified, "x"),
             ]
         );
+        assert_eq!(commits[0].reflog, None);
         assert_eq!(commits[1].author, "Erwin");
         assert!(commits[1].files.is_empty());
+        assert_eq!(
+            commits[1].reflog,
+            Some(Reflog {
+                selector: "HEAD@{1}".into(),
+                action: "commit (initial): root".into(),
+            })
+        );
     }
 
     #[test]
@@ -592,5 +629,39 @@ mod tests {
             [Header, Header, Header, Hunk, Removed, Added, Context]
         );
         assert_eq!(parse_diff(text)[6].text, " ctx    x");
+    }
+
+    #[test]
+    fn reflog_walks_head_movements() {
+        let repo = Repo::new();
+        repo.write("a", "a\n");
+        repo.commit("first");
+        repo.git(&["checkout", "-q", "-b", "side"]);
+        repo.write("b", "b\n");
+        repo.commit("on side");
+        repo.git(&["checkout", "-q", "main"]);
+        // Deleting the branch leaves its commit reachable only through the reflog.
+        repo.git(&["branch", "-q", "-D", "side"]);
+
+        let branch: Vec<_> = log(repo.path(), Source::Log)
+            .unwrap()
+            .collect::<Result<_>>()
+            .unwrap();
+        assert_eq!(branch.len(), 1);
+        assert!(branch[0].reflog.is_none());
+
+        let reflog: Vec<_> = log(repo.path(), Source::Reflog)
+            .unwrap()
+            .collect::<Result<_>>()
+            .unwrap();
+        let actions: Vec<_> = reflog
+            .iter()
+            .map(|c| c.reflog.as_ref().unwrap().action.as_str())
+            .collect();
+        assert_eq!(actions[0], "checkout: moving from side to main");
+        assert!(actions.contains(&"commit: on side"));
+        assert_eq!(reflog[0].reflog.as_ref().unwrap().selector, "HEAD@{0}");
+        let lost = reflog.iter().find(|c| c.subject == "on side").unwrap();
+        assert_eq!(lost.files, vec![change(Status::Added, "b")]);
     }
 }

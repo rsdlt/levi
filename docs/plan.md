@@ -19,7 +19,7 @@ Widths: ~25% / 20% / 55%. The diff pane gets the room because that's where readi
 
 | # | Topic | Decision |
 |---|---|---|
-| 1 | Column a source | **Commit log** (`git log`), not the reflog. |
+| 1 | Column a source | **Commit log** (`git log`) by default; `/r` switches to the reflog (see Commands). |
 | 2 | Scope | **Current branch only** (`HEAD`), no `--all`. |
 | 3 | Merge commits | **Diff against first parent** (`--diff-merges=first-parent` for files and diff). History is *not* first-parent-only: commits from merged branches still show. |
 | 4 | Uncommitted changes | **Out for now.** No working-tree pseudo-commit. |
@@ -123,9 +123,22 @@ All five steps are done.
   `sha=$(levi) && git show "$sha"` stops cleanly.
 - Integration tests in `tests/cli.rs` run the real binary for every pre-TUI path.
 
+## Commands
+
+Slash commands live in the search bar (`src/query.rs`). They're whole words only, so `src/config`
+and `/cache` stay fuzzy text; git paths never start with `/`.
+
+- **`/r` — reflog.** A switch, anywhere in the query. The commits column reloads from
+  `git log --walk-reflogs` (same record format: `%gd`/`%gs` are empty outside reflog mode), rows show
+  the reflog action, and the fuzzy header haystack includes it. Entries can repeat a commit.
+- **`/c` — code search.** Everything after it, spaces included, is the text the diffs must
+  contain; what's before it stays fuzzy. `/r /c foo` searches the code of reflog commits.
+
+Each load has a generation number: switching source starts a new one, the old loader stops at its
+next commit (killing its git), and late messages from old generations are dropped.
+
 ## Later (not now)
 
-- Reflog mode (`-r` flag or hotkey) — same pipeline, different source.
 - `--all` branches.
 - Working-tree pseudo-commit at the top of column a.
 - Optional `delta` piping / syntax highlighting.

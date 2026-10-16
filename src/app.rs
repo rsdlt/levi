@@ -6,6 +6,7 @@ use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModif
 
 use crate::filter::{self, Filter, Hit};
 use crate::git::{Commit, DiffLine, FileChange};
+use crate::query::{self, Source};
 
 /// Diffs kept in memory; older ones are refetched on demand.
 const DIFF_CACHE_SIZE: usize = 128;
@@ -16,9 +17,17 @@ pub type DiffResult = Result<Vec<DiffLine>, String>;
 
 pub enum Msg {
     Input(Event),
-    Commits(Vec<Commit>),
-    LogDone(Result<(), String>),
+    /// A batch from the log load with this generation.
+    Commits(u64, Vec<Commit>),
+    LogDone(u64, Result<(), String>),
     Diff(DiffKey, DiffResult),
+}
+
+/// Load `source` into the commits column. A higher generation supersedes the rest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LogRequest {
+    pub source: Source,
+    pub generation: u64,
 }
 
 pub struct DiffRequest {
@@ -78,7 +87,10 @@ pub struct App {
     pub filter: Filter,
     pub loading: bool,
     pub log_error: Option<String>,
+    /// What's typed in the search bar.
     pub query: String,
+    /// Where the commits column comes from, as of the last `settle`.
+    pub source: Source,
     pub focus: Focus,
     /// Index into `view`.
     pub commit_idx: usize,
@@ -94,6 +106,10 @@ pub struct App {
     diffs: DiffCache,
     /// Last diff handed out by `take_diff_request`.
     requested: Option<DiffKey>,
+    /// The query the view reflects.
+    applied: String,
+    generation: u64,
+    log_request: Option<LogRequest>,
 }
 
 impl App {
@@ -105,6 +121,7 @@ impl App {
             loading: true,
             log_error: None,
             query: String::new(),
+            source: Source::Log,
             focus: Focus::Commits,
             commit_idx: 0,
             file_idx: 0,
@@ -115,6 +132,12 @@ impl App {
             exit: None,
             diffs: DiffCache::default(),
             requested: None,
+            applied: String::new(),
+            generation: 0,
+            log_request: Some(LogRequest {
+                source: Source::Log,
+                generation: 0,
+            }),
         }
     }
 
@@ -130,11 +153,14 @@ impl App {
                 self.handle_key(key);
             }
             Msg::Input(_) => {}
-            Msg::Commits(batch) => {
+            // Leftovers from a load that was superseded.
+            Msg::Commits(generation, _) | Msg::LogDone(generation, _)
+                if generation != self.generation => {}
+            Msg::Commits(_, batch) => {
                 self.settle();
                 self.add_commits(batch);
             }
-            Msg::LogDone(result) => {
+            Msg::LogDone(_, result) => {
                 self.loading = false;
                 self.log_error = result.err();
             }
@@ -144,20 +170,47 @@ impl App {
 
     /// Applies a changed query to the view. Selection jumps to the best match.
     pub fn settle(&mut self) {
-        if self.query == self.filter.query() {
+        if self.query == self.applied {
             return;
         }
-        let narrows = self.filter.set_query(&self.query);
+        self.applied = self.query.clone();
+        let parsed = query::parse(&self.query);
+        if parsed.source != self.source {
+            self.switch_source(parsed.source);
+        } else if parsed.fuzzy == self.filter.query() {
+            return;
+        }
+        let narrows = self.filter.set_query(&parsed.fuzzy);
         let candidates: Vec<usize> = if narrows {
             self.view.iter().map(|h| h.commit).collect()
         } else {
             (0..self.commits.len()).collect()
         };
-        self.view = filter::par_matches(&self.query, &self.commits, &candidates);
+        self.view = filter::par_matches(&parsed.fuzzy, &self.commits, &candidates);
         filter::sort(&mut self.view);
         self.commit_idx = 0;
         self.file_idx = 0;
         self.diff_scroll = 0;
+    }
+
+    /// Drops the loaded commits and asks for `source` instead.
+    fn switch_source(&mut self, source: Source) {
+        self.source = source;
+        self.generation += 1;
+        self.log_request = Some(LogRequest {
+            source,
+            generation: self.generation,
+        });
+        self.commits.clear();
+        self.view.clear();
+        self.loading = true;
+        self.log_error = None;
+    }
+
+    /// The commit list to load, when the source changed.
+    pub fn take_log_request(&mut self) -> Option<LogRequest> {
+        self.settle();
+        self.log_request.take()
     }
 
     /// Appends newly loaded commits, keeping the selection on the same commit.
@@ -384,7 +437,7 @@ mod bench {
             return;
         };
         let t = Instant::now();
-        let commits: Vec<Commit> = crate::git::log(path.as_ref())
+        let commits: Vec<Commit> = crate::git::log(path.as_ref(), crate::query::Source::Log)
             .unwrap()
             .map(Result::unwrap)
             .collect();
@@ -396,7 +449,7 @@ mod bench {
         );
 
         let mut app = App::new();
-        app.update(Msg::Commits(commits));
+        app.update(Msg::Commits(0, commits));
         for query in [
             "e",
             "pa",

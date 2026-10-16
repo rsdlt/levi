@@ -8,6 +8,7 @@ use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 
 use crate::app::{App, DiffView, Focus};
 use crate::git::{LineKind, Status};
+use crate::query::Source;
 
 const ACCENT: Color = Color::Cyan;
 
@@ -54,18 +55,27 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
         Span::raw(&app.query),
         Span::styled("█", Style::new().fg(ACCENT)),
     ]);
-    let count = if app.query.trim().is_empty() {
+    let count = if app.filter.is_empty() {
         app.commits.len().to_string()
     } else {
         format!("{}/{}", app.view.len(), app.commits.len())
     };
+    let noun = match app.source {
+        Source::Log => "commits",
+        Source::Reflog => "reflog entries",
+    };
     let status = match &app.log_error {
         Some(err) => Line::styled(format!(" {err} "), Color::Red),
-        None if app.loading => Line::from(format!(" {count} commits… ")),
-        None => Line::from(format!(" {count} commits ")),
+        None if app.loading => Line::from(format!(" {count} {noun}… ")),
+        None => Line::from(format!(" {count} {noun} ")),
     };
+    let mut title = vec![Span::raw(" "), "levi".bold()];
+    if app.source == Source::Reflog {
+        title.push(Span::styled(" · reflog", Style::new().fg(ACCENT)));
+    }
+    title.push(Span::raw(" "));
     let block = Block::bordered()
-        .title(" levi ".bold())
+        .title(Line::from(title))
         .title_bottom(status.right_aligned())
         .border_style(Style::new().dark_gray());
     frame.render_widget(Paragraph::new(line).block(block), area);
@@ -99,7 +109,11 @@ fn draw_window(
 
 fn draw_commits(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::Commits;
-    let block = pane("commits", focused);
+    let title = match app.source {
+        Source::Log => "commits",
+        Source::Reflog => "reflog",
+    };
+    let block = pane(title, focused);
     let height = block.inner(area).height as usize;
     follow(&mut app.commit_offset, app.commit_idx, height);
 
@@ -121,9 +135,11 @@ fn draw_commits(frame: &mut Frame, app: &mut App, area: Rect) {
                 Style::new().fg(Color::Yellow)
             };
             let mut spans = vec![Span::styled(c.short.as_str(), sha_style), Span::raw(" ")];
+            // In the reflog, what happened says more than the commit's subject.
+            let text = c.reflog.as_ref().map_or(&c.subject, |r| &r.action);
             spans.extend(highlighted(
-                &c.subject,
-                &filter.highlights(&c.subject, false),
+                text,
+                &filter.highlights(text, false),
                 Style::new(),
             ));
             ListItem::new(Line::from(spans))
@@ -314,12 +330,12 @@ mod tests {
         repo.commit("second");
 
         let mut app = App::new();
-        app.update(Msg::Commits(repo.log()));
+        app.update(Msg::Commits(0, repo.log()));
         let screen = render(&mut app);
         assert!(screen.contains("2 commits…"));
         assert!(screen.contains("loading…"));
 
-        app.update(Msg::LogDone(Ok(())));
+        app.update(Msg::LogDone(0, Ok(())));
         serve_diffs(&mut app, &repo);
         let screen = render(&mut app);
         println!("{screen}");
@@ -364,7 +380,7 @@ mod tests {
     #[test]
     fn log_error_shows_in_status() {
         let mut app = App::new();
-        app.update(Msg::LogDone(Err("git log: boom".into())));
+        app.update(Msg::LogDone(0, Err("git log: boom".into())));
         assert!(render(&mut app).contains("git log: boom"));
     }
 
@@ -385,8 +401,8 @@ mod tests {
     fn search_by_file_narrows_both_columns() {
         let repo = titans();
         let mut app = App::new();
-        app.update(Msg::Commits(repo.log()));
-        app.update(Msg::LogDone(Ok(())));
+        app.update(Msg::Commits(0, repo.log()));
+        app.update(Msg::LogDone(0, Ok(())));
 
         type_str(&mut app, "parse.rs");
         serve_diffs(&mut app, &repo);
@@ -423,7 +439,7 @@ mod tests {
     fn keys_after_typing_see_the_new_view() {
         let repo = titans();
         let mut app = App::new();
-        app.update(Msg::Commits(repo.log()));
+        app.update(Msg::Commits(0, repo.log()));
         // Typed and moved in one burst, before any frame settled the query.
         type_str(&mut app, "parse");
         press(&mut app, KeyCode::Down);
@@ -436,11 +452,11 @@ mod tests {
         let mut log = repo.log();
         let older = log.split_off(1);
         let mut app = App::new();
-        app.update(Msg::Commits(log));
+        app.update(Msg::Commits(0, log));
         type_str(&mut app, "s");
         app.settle();
         let selected = app.commit().unwrap().sha.clone();
-        app.update(Msg::Commits(older));
+        app.update(Msg::Commits(0, older));
         assert_eq!(app.commit().unwrap().sha, selected);
         assert_eq!(app.view.len(), 3);
     }
@@ -462,7 +478,7 @@ mod tests {
             repo.commit(&format!("commit number {n}"));
         }
         let mut app = App::new();
-        app.update(Msg::Commits(repo.log()));
+        app.update(Msg::Commits(0, repo.log()));
         for _ in 0..20 {
             press(&mut app, KeyCode::Down);
         }
@@ -471,5 +487,56 @@ mod tests {
         assert!(!screen.contains("commit number 29"), "top scrolled away");
         // 14 rows: 3 for search, 2 borders, 9 list rows.
         assert_eq!(app.commit_offset, 20 + 1 - 9);
+    }
+
+    #[test]
+    fn slash_r_switches_to_the_reflog() {
+        let repo = titans();
+        repo.git(&["checkout", "-q", "-b", "expedition"]);
+        repo.git(&["checkout", "-q", "main"]);
+        let mut app = App::new();
+        let first = app.take_log_request().unwrap();
+        assert_eq!((first.source, first.generation), (Source::Log, 0));
+        app.update(Msg::Commits(0, repo.log()));
+        app.update(Msg::LogDone(0, Ok(())));
+
+        type_str(&mut app, "/r");
+        let req = app.take_log_request().unwrap();
+        assert_eq!((req.source, req.generation), (Source::Reflog, 1));
+        assert!(app.commits.is_empty() && app.loading);
+        assert!(app.take_log_request().is_none(), "asked once");
+
+        // A late batch from the old log is ignored.
+        app.update(Msg::Commits(0, repo.log()));
+        assert!(app.commits.is_empty());
+
+        let entries = git::log(repo.path(), Source::Reflog)
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        app.update(Msg::Commits(1, entries));
+        app.update(Msg::LogDone(1, Ok(())));
+        let screen = render(&mut app);
+        println!("{screen}");
+        assert!(screen.contains("levi · reflog"));
+        assert!(
+            screen.contains("┌ reflog ─"),
+            "pane title follows the source"
+        );
+        assert!(screen.contains(" checkout: movin"));
+        assert!(screen.contains("reflog entries"));
+        let action = &app.commit().unwrap().reflog.as_ref().unwrap().action;
+        assert_eq!(action, "checkout: moving from expedition to main");
+
+        // The rest of the query filters entries, including by action.
+        type_str(&mut app, " expedition");
+        let screen = render(&mut app);
+        assert!(screen.contains("2/"), "{screen}");
+        assert!(app.take_log_request().is_none(), "filtering doesn't reload");
+
+        // Clearing the query goes back to the log.
+        press(&mut app, KeyCode::Esc);
+        let req = app.take_log_request().unwrap();
+        assert_eq!((req.source, req.generation), (Source::Log, 2));
     }
 }

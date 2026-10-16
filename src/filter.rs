@@ -82,7 +82,8 @@ impl Filter {
         narrows
     }
 
-    /// Matches a commit by sha prefix, subject or author, or any file it touched.
+    /// Matches a commit by sha prefix, subject, author or reflog action, or any
+    /// file it touched.
     pub fn matches(&mut self, idx: usize, commit: &Commit) -> Option<Hit> {
         if self.is_empty() {
             return Some(Hit::all(idx));
@@ -105,6 +106,10 @@ impl Filter {
         self.header.push_str(&commit.subject);
         self.header.push('\t');
         self.header.push_str(&commit.author);
+        if let Some(reflog) = &commit.reflog {
+            self.header.push('\t');
+            self.header.push_str(&reflog.action);
+        }
         let header = score(&self.pattern, &mut self.text, &mut self.buf, &self.header);
         let mut best = header;
         let mut files = Vec::new();
@@ -191,6 +196,7 @@ mod tests {
             author: "Levi Ackerman".into(),
             date: "now".into(),
             subject: subject.into(),
+            reflog: None,
             files: files
                 .iter()
                 .map(|p| FileChange {

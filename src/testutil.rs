@@ -8,6 +8,7 @@ use anyhow::Result;
 use tempfile::TempDir;
 
 use crate::git::{Commit, log};
+use crate::query::Source;
 
 pub struct Repo {
     dir: TempDir,
@@ -50,6 +51,9 @@ impl Repo {
     }
 
     pub fn log(&self) -> Vec<Commit> {
-        log(self.path()).unwrap().collect::<Result<_>>().unwrap()
+        log(self.path(), Source::Log)
+            .unwrap()
+            .collect::<Result<_>>()
+            .unwrap()
     }
 }

@@ -9,6 +9,9 @@ the sha printed on stdout and the exit codes.
 
 ### Added
 
+- `/r` in the search bar switches to the reflog: every place HEAD has been, including commits
+  on deleted branches. The rest of the query filters it, by reflog action too.
+
 - GitHub Actions CI: tests on Linux and macOS, rustfmt, clippy, the minimum Rust version
   (1.88), and `cargo deny`.
 

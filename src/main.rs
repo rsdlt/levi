@@ -1,6 +1,7 @@
 mod app;
 mod filter;
 mod git;
+mod query;
 mod ui;
 mod worker;
 
@@ -31,6 +32,9 @@ Usage: levi    (run inside a git repository)
 
 Type to filter commits by subject, author, sha prefix or touched files.
 fzf syntax: 'exact  ^prefix  suffix$  !negate  (space-separated terms all match)
+
+Commands (whole words in the search bar):
+  /r                  search the reflog instead of the log: /r checkout
 
 Keys:
   ↑/↓  C-p/C-n        move in the focused pane
@@ -87,10 +91,13 @@ fn try_main() -> Result<Exit> {
 fn run(terminal: &mut Tui, app: &mut App, root: PathBuf) -> Result<()> {
     let (tx, rx) = mpsc::channel();
     worker::spawn_input(tx.clone());
-    worker::spawn_log(root.clone(), tx.clone());
+    let logs = worker::LogLoader::new(root.clone(), tx.clone());
     let diffs = worker::spawn_diff(root, tx);
 
     while app.exit.is_none() {
+        if let Some(req) = app.take_log_request() {
+            logs.start(req);
+        }
         if let Some(req) = app.take_diff_request() {
             diffs.send(req)?;
         }

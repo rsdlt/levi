@@ -66,6 +66,15 @@ As you type, the commits and files columns narrow down together, like a squad cl
 - fzf syntax: `'exact`, `^prefix`, `suffix$`, `!not`, smart case, and space-separated terms that
   must all match.
 
+### Commands
+
+Slash commands go in the same search bar. They count only as whole words, so `src/config` is
+still a plain search.
+
+| Command | What it does |
+|---|---|
+| `/r` | Switches to the **reflog**: every place HEAD has been, including commits on branches you've since deleted. The rest of the query filters it, by action too (`/r checkout`). Remove `/r` to go back to the log. |
+
 ## Field report
 
 - **Swift.** It opens instantly on huge repositories: the log streams in while you're already
