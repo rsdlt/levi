@@ -3,9 +3,11 @@
 All notable changes to levi are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and levi uses
 [Semantic Versioning](https://semver.org/). Its public surface is the keys, the flags,
-the sha printed on stdout and the exit codes.
+the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
+
+## [0.2.0] - 2026-10-16
 
 ### Added
 
@@ -15,7 +17,6 @@ the sha printed on stdout and the exit codes.
   `text`, and only the files where that happens. The match is literal with smart case; the diff
   jumps to it and highlights it. The search starts when typing pauses, runs on every core,
   streams results with progress, and is cancelled as soon as the query changes.
-
 - GitHub Actions CI: tests on Linux and macOS, rustfmt, clippy, the minimum Rust version
   (1.88), and `cargo deny`.
 
@@ -38,5 +39,6 @@ First release.
 - `--help` and `--version`.
 - `cargo deny` configuration for license, advisory and source checks.
 
-[Unreleased]: https://github.com/rsdlt/levi/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/rsdlt/levi/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/rsdlt/levi/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/rsdlt/levi/releases/tag/v0.1.0
