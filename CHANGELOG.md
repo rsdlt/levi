@@ -7,6 +7,8 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-16
+
 ### Added
 
 - A row of key hints at the bottom, including the `/c` and `/r` commands. On narrow terminals
@@ -92,7 +94,8 @@ First release.
 - `--help` and `--version`.
 - `cargo deny` configuration for license, advisory and source checks.
 
-[Unreleased]: https://github.com/rsdlt/levi/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/rsdlt/levi/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/rsdlt/levi/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/rsdlt/levi/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/rsdlt/levi/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/rsdlt/levi/compare/v0.4.0...v0.5.0
