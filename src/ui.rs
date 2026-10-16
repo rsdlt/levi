@@ -278,9 +278,15 @@ fn status_style(status: Status) -> Style {
 }
 
 fn draw_diff(frame: &mut Frame, app: &mut App, area: Rect) {
-    let title = app.file().map_or("diff".to_owned(), |f| f.path.clone());
+    let mut title = app.file().map_or("diff".to_owned(), |f| f.path.clone());
+    if app.diff_column > 0 {
+        // Says the view is shifted, and by how much.
+        title.push_str(&format!(" · col {}", app.diff_column + 1));
+    }
     let block = pane(&title, app.focus == Focus::Diff);
-    app.diff_height = block.inner(area).height as usize;
+    let inner = block.inner(area);
+    app.diff_height = inner.height as usize;
+    app.diff_width = inner.width as usize;
 
     let pattern = app.code.as_ref().map(|c| c.pattern.as_str());
     let mut lines: Vec<Line> = match app.diff() {
@@ -298,7 +304,8 @@ fn draw_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         lines.push(Line::default());
         lines.push(Line::styled("no file changes", Style::new().dim()));
     }
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+    let column = app.diff_column.min(u16::MAX as usize) as u16;
+    frame.render_widget(Paragraph::new(lines).block(block).scroll((0, column)), area);
 }
 
 /// A diff line with its changed words in reverse video, like `diff-highlight`,
@@ -570,6 +577,87 @@ mod tests {
             let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
             terminal.draw(|f| draw(f, &mut app)).unwrap();
         }
+    }
+
+    #[test]
+    fn long_lines_scroll_sideways() {
+        let repo = Repo::new();
+        let long = format!("let start = 1; {}// the TAIL end", "x".repeat(120));
+        repo.write("wide.rs", &format!("{long}\n"));
+        repo.write("narrow.rs", "short\n");
+        repo.commit("wide");
+        let mut app = loaded(&repo);
+        render(&mut app);
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Down);
+        serve_diffs(&mut app, &repo);
+        assert_eq!(app.file().unwrap().path, "wide.rs");
+        let screen = render(&mut app);
+        assert!(screen.contains("+let start") && !screen.contains("TAIL"));
+
+        let shift = |app: &mut App, code| {
+            let key = KeyEvent::new(code, KeyModifiers::SHIFT);
+            app.update(Msg::Input(Event::Key(key)));
+        };
+        shift(&mut app, KeyCode::Right);
+        let screen = render(&mut app);
+        assert!(
+            screen.contains("wide.rs · col 9"),
+            "the title says it's shifted"
+        );
+        assert!(!screen.contains("+let start"));
+
+        // It stops once the end of the widest line is in view.
+        for _ in 0..50 {
+            shift(&mut app, KeyCode::Right);
+        }
+        let screen = render(&mut app);
+        assert!(
+            screen.contains("the TAIL end│"),
+            "flush with the right edge"
+        );
+        assert_eq!(app.diff_column, long.len() + 1 - app.diff_width);
+        assert_eq!(app.focus, Focus::Files, "Shift-arrows don't switch panes");
+
+        // The wheel scrolls sideways over the diff, and so does Shift+wheel.
+        let x = app.panes[2].x + 2;
+        let wheel = |app: &mut App, kind, modifiers| {
+            app.update(Msg::Input(Event::Mouse(MouseEvent {
+                kind,
+                column: x,
+                row: 10,
+                modifiers,
+            })));
+        };
+        let end = app.diff_column;
+        wheel(&mut app, MouseEventKind::ScrollLeft, KeyModifiers::NONE);
+        assert_eq!(app.diff_column, end - 8);
+        wheel(&mut app, MouseEventKind::ScrollDown, KeyModifiers::SHIFT);
+        assert_eq!(app.diff_column, end);
+        assert_eq!(app.diff_scroll, 0, "Shift+wheel doesn't scroll down");
+
+        // Another file starts at the left edge again.
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.diff_column, 0);
+        shift(&mut app, KeyCode::Left);
+        assert_eq!(app.diff_column, 0);
+    }
+
+    #[test]
+    fn code_search_scrolls_to_a_match_past_the_edge() {
+        let repo = Repo::new();
+        let long = format!("let start = 1; {}// the TAIL end", "x".repeat(120));
+        repo.write("wide.rs", &format!("{long}\n"));
+        repo.commit("wide");
+        let mut app = loaded(&repo);
+        render(&mut app);
+        type_str(&mut app, "/c TAIL");
+        serve_code(&mut app, &repo);
+        serve_diffs(&mut app, &repo);
+        let screen = render(&mut app);
+        println!("{screen}");
+        assert!(app.diff_column > 0);
+        assert!(screen.contains("the TAIL end"), "the match is in view");
     }
 
     #[test]

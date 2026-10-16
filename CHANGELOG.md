@@ -7,6 +7,12 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+### Added
+
+- Lines wider than the diff pane scroll sideways with `Shift-←`/`Shift-→`, horizontal mouse
+  scrolling or `Shift`+wheel. The pane title shows the column while shifted, and `/c` scrolls
+  to a match past the right edge.
+
 ## [0.6.0] - 2026-10-16
 
 ### Added

@@ -8,6 +8,7 @@ use ratatui::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::layout::{Position, Rect};
+use ratatui::text::Span;
 
 use crate::filter::{self, Filter, Hit};
 use crate::git::{Commit, DiffLine, FileChange, LineKind};
@@ -21,6 +22,8 @@ pub const CODE_DEBOUNCE: Duration = Duration::from_millis(300);
 const JUMP_CONTEXT: usize = 3;
 /// Diff lines one notch of the mouse wheel scrolls.
 const WHEEL_LINES: isize = 3;
+/// Columns one sideways scroll of the diff moves, by key or wheel.
+const SIDE_STEP: isize = 8;
 
 /// (commit sha, file path), or an empty path for a commit without files.
 pub type DiffKey = (String, String);
@@ -181,8 +184,12 @@ pub struct App {
     pub commit_offset: usize,
     pub file_offset: usize,
     pub diff_scroll: usize,
+    /// First visible column of the diff, for lines wider than the pane.
+    pub diff_column: usize,
     /// Rows visible in the diff pane, updated on every draw.
     pub diff_height: usize,
+    /// Columns visible in the diff pane, updated on every draw.
+    pub diff_width: usize,
     /// Where the commits, files and diff panes are on screen, updated on every
     /// draw, so clicks can find their target.
     pub panes: [Rect; 3],
@@ -220,7 +227,9 @@ impl App {
             commit_offset: 0,
             file_offset: 0,
             diff_scroll: 0,
+            diff_column: 0,
             diff_height: 0,
+            diff_width: 0,
             panes: [Rect::default(); 3],
             exit: None,
             diffs: DiffCache::default(),
@@ -336,7 +345,7 @@ impl App {
         filter::sort(&mut self.view);
         self.commit_idx = 0;
         self.file_idx = 0;
-        self.diff_scroll = 0;
+        self.reset_diff_scroll();
     }
 
     /// Drops the loaded commits and asks for `source` instead.
@@ -455,12 +464,22 @@ impl App {
         let Some(Ok(lines)) = self.diffs.get(&key) else {
             return;
         };
-        let first = lines.iter().position(|l| {
-            matches!(l.kind, LineKind::Added | LineKind::Removed)
-                && !find_code(&l.text[1..], &code.pattern).is_empty()
+        let first = lines.iter().enumerate().find_map(|(i, l)| {
+            if !matches!(l.kind, LineKind::Added | LineKind::Removed) {
+                return None;
+            }
+            let found = find_code(&l.text[1..], &code.pattern).into_iter().next()?;
+            // Back to `l.text` offsets, past the leading `+`/`-`.
+            Some((i, &l.text[..found.start + 1], &l.text[..found.end + 1]))
         });
-        if let Some(i) = first {
+        if let Some((i, before, through)) = first {
             self.diff_scroll = i.saturating_sub(JUMP_CONTEXT);
+            // A match past the right edge is scrolled into view too.
+            self.diff_column = if self.diff_width > 0 && columns(through) > self.diff_width {
+                columns(before).saturating_sub(SIDE_STEP as usize)
+            } else {
+                0
+            };
         }
         self.jumped = Some(key);
     }
@@ -551,6 +570,7 @@ impl App {
 
     fn handle_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let half_page = (self.diff_height / 2).max(1) as isize;
         let page = self.diff_height.max(1) as isize;
         match key.code {
@@ -563,6 +583,8 @@ impl App {
             KeyCode::Up => self.move_selection(-1),
             KeyCode::PageDown => self.scroll_diff(page),
             KeyCode::PageUp => self.scroll_diff(-page),
+            KeyCode::Right if shift => self.scroll_diff_sideways(SIDE_STEP),
+            KeyCode::Left if shift => self.scroll_diff_sideways(-SIDE_STEP),
             KeyCode::Tab | KeyCode::Right => self.focus = self.focus.next(),
             KeyCode::BackTab | KeyCode::Left => self.focus = self.focus.prev(),
             KeyCode::Enter => {
@@ -588,9 +610,16 @@ impl App {
             return;
         };
         let pane = [Focus::Commits, Focus::Files, Focus::Diff][i];
+        let diff = pane == Focus::Diff;
+        // Some terminals send Shift+wheel as a vertical scroll with Shift held.
+        let sideways = mouse.modifiers.contains(KeyModifiers::SHIFT);
         match mouse.kind {
-            MouseEventKind::ScrollDown if pane == Focus::Diff => self.scroll_diff(WHEEL_LINES),
-            MouseEventKind::ScrollUp if pane == Focus::Diff => self.scroll_diff(-WHEEL_LINES),
+            MouseEventKind::ScrollRight if diff => self.scroll_diff_sideways(SIDE_STEP),
+            MouseEventKind::ScrollLeft if diff => self.scroll_diff_sideways(-SIDE_STEP),
+            MouseEventKind::ScrollDown if diff && sideways => self.scroll_diff_sideways(SIDE_STEP),
+            MouseEventKind::ScrollUp if diff && sideways => self.scroll_diff_sideways(-SIDE_STEP),
+            MouseEventKind::ScrollDown if diff => self.scroll_diff(WHEEL_LINES),
+            MouseEventKind::ScrollUp if diff => self.scroll_diff(-WHEEL_LINES),
             MouseEventKind::ScrollDown => self.move_in(pane, 1),
             MouseEventKind::ScrollUp => self.move_in(pane, -1),
             MouseEventKind::Down(MouseButton::Left) => {
@@ -625,7 +654,7 @@ impl App {
                 if idx != self.commit_idx {
                     self.commit_idx = idx;
                     self.file_idx = 0;
-                    self.diff_scroll = 0;
+                    self.reset_diff_scroll();
                 }
             }
             Focus::Files => {
@@ -633,7 +662,7 @@ impl App {
                 let idx = step(self.file_idx, delta, len);
                 if idx != self.file_idx {
                     self.file_idx = idx;
-                    self.diff_scroll = 0;
+                    self.reset_diff_scroll();
                 }
             }
             Focus::Diff => self.scroll_diff(delta),
@@ -647,6 +676,27 @@ impl App {
         };
         self.diff_scroll = step(self.diff_scroll, delta, lines);
     }
+
+    /// Moves the diff sideways, no further than it takes to show the end of
+    /// its widest line.
+    fn scroll_diff_sideways(&mut self, delta: isize) {
+        let widest = match self.diff() {
+            DiffView::Ready(lines) => lines.iter().map(|l| columns(&l.text)).max(),
+            _ => None,
+        };
+        let last = widest.unwrap_or(0).saturating_sub(self.diff_width);
+        self.diff_column = step(self.diff_column, delta, last + 1);
+    }
+
+    fn reset_diff_scroll(&mut self) {
+        self.diff_scroll = 0;
+        self.diff_column = 0;
+    }
+}
+
+/// Terminal columns `text` takes up.
+fn columns(text: &str) -> usize {
+    Span::raw(text).width()
 }
 
 /// Keys that only change the query (see `handle_key`).

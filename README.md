@@ -43,11 +43,12 @@ he'll tell you in one line and leave. He doesn't do small talk.
 | `↑` `↓`, `C-p` `C-n` | move in the focused pane |
 | `Tab` `S-Tab`, `←` `→` | switch pane: commits → files → diff |
 | `PgUp` `PgDn`, `C-u` `C-d` | scroll the diff |
+| `S-←` `S-→` | scroll the diff sideways, for lines wider than the pane |
 | `Enter` | print the selected commit's sha and quit |
 | `Esc` | clear the search, or quit if it's empty |
 | `C-c` | quit |
 | click | select a commit or file, or focus the diff |
-| wheel | move the list under the pointer, or scroll the diff |
+| wheel | move the list under the pointer, or scroll the diff (sideways too: trackpad or `Shift`+wheel) |
 
 levi takes the mouse, so to select text with it, hold a modifier while you drag: `Option` in
 iTerm2, `Fn` in Terminal.app, `Shift` in most other terminals.

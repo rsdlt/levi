@@ -76,11 +76,12 @@ Details settled while building:
 | `↑/↓`, `C-p/C-n` | move in the focused column |
 | `Tab` / `S-Tab`, `←/→` | cycle focus a → b → c |
 | `PgUp/PgDn`, `C-u/C-d` | scroll the diff |
+| `S-←/S-→` | scroll the diff sideways, 8 columns (Alt-arrows would be word jumps in macOS terminals) |
 | `Enter` | print the selected sha to stdout and quit (`git checkout $(levi)`) |
 | `Esc` | clear the query, or quit if it's already empty |
 | `C-c` | quit |
 | click | select a commit/file and focus its pane; focus the diff |
-| wheel | over a list, move its selection; over the diff, scroll 3 lines. Focus stays put |
+| wheel | over a list, move its selection; over the diff, scroll 3 lines (sideways: horizontal wheel or Shift+wheel, 8 columns). Focus stays put |
 
 Mouse capture is on for the whole session and off on every exit (panics too). Motion and drag
 events are dropped in the input thread, since capture reports every movement and each would
@@ -105,6 +106,10 @@ usually copied, comes out on stdout anyway.
   render in reverse video, as `diff-highlight` does; a `/c` match still wins. A pair whose kept
   (non-whitespace) bytes are under half the line is left unmarked, since lighting most of a line
   says nothing.
+- **Sideways.** Lines aren't wrapped; the diff scrolls horizontally instead (`Paragraph::scroll`,
+  so wide characters are cut correctly). It stops once the widest line's end is in view, resets
+  with the vertical scroll when the selection moves, and the title shows `· col N` while shifted.
+  A `/c` jump also shifts right when its match ends past the pane's edge.
 - **Bounded.** The LCS is quadratic, so each diff gets a budget of 1M table cells. Past it, or
   for a pair that alone would exceed it, the whole middle between the shared ends is marked
   (what `diff-highlight` does), which is linear. Runs on the diff worker, once per cached diff.

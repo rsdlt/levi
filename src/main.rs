@@ -45,6 +45,7 @@ Keys:
   ↑/↓  C-p/C-n        move in the focused pane
   Tab/S-Tab  ←/→      switch pane
   PgUp/PgDn  C-u/C-d  scroll the diff
+  S-←/S-→             scroll the diff sideways
   Enter               print the selected sha and quit:  git show $(levi)
   Esc                 clear the query, or quit
   C-c                 quit
