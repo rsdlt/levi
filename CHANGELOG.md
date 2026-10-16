@@ -7,6 +7,11 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+### Added
+
+- A row of key hints at the bottom, including the `/c` and `/r` commands. On narrow terminals
+  the least used hints are left out.
+
 ## [0.7.0] - 2026-10-16
 
 ### Added

@@ -11,9 +11,14 @@
 │ 9f8e7d6 add tests  │ A tests/p.rs      │ - old line                     │
 │ ...                │                   │ + new line                     │
 └────────────────────┴───────────────────┴────────────────────────────────┘
+ ↑↓ move  enter pick  /c search code  /r reflog  tab pane  esc clear/quit
 ```
 
 Widths: ~25% / 20% / 55%. The diff pane gets the room because that's where reading happens.
+
+The bottom row lists key hints, `/c` and `/r` included, so nobody has to read `--help` to find
+them. They're ordered by usefulness; whatever doesn't fit the width is dropped from the end, never
+cut mid-hint. One row, always on: no toggle key, since every printable key belongs to the search.
 
 ## Decisions
 

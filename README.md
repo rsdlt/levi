@@ -20,6 +20,7 @@ Named in honor of humanity's strongest soldier: **small, swift and precise.**
 │...                     ││                  ││-    let x = 1;             │
 │                        ││                  ││+    let x = 2;             │
 └────────────────────────┘└──────────────────┘└────────────────────────────┘
+ ↑↓ move  enter pick  /c search code  /r reflog  tab pane  esc clear/quit
 ```
 
 ## Enlist

@@ -14,9 +14,26 @@ use crate::query::{Source, find_code};
 
 const ACCENT: Color = Color::Cyan;
 
+/// The bottom row's key hints, most useful first. Those that don't fit the
+/// terminal's width are dropped from the end.
+const HINTS: [(&str, &str); 8] = [
+    ("↑↓", "move"),
+    ("enter", "pick"),
+    ("/c", "search code"),
+    ("/r", "reflog"),
+    ("tab", "pane"),
+    ("esc", "clear/quit"),
+    ("pgup/pgdn", "scroll"),
+    ("S-←→", "sideways"),
+];
+
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    let [search, body] =
-        Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).areas(frame.area());
+    let [search, body, hints] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .areas(frame.area());
     let [commits, files, diff] = Layout::horizontal([
         Constraint::Percentage(25),
         Constraint::Percentage(20),
@@ -29,6 +46,28 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_commits(frame, app, commits);
     draw_files(frame, app, files);
     draw_diff(frame, app, diff);
+    draw_hints(frame, hints);
+}
+
+fn draw_hints(frame: &mut Frame, area: Rect) {
+    let mut spans = vec![Span::raw(" ")];
+    let mut width = 1;
+    for (key, action) in HINTS {
+        let hint = [
+            Span::styled(key, Style::new().fg(ACCENT).bold()),
+            Span::raw(" "),
+            Span::styled(action, Style::new().dim()),
+            Span::raw("  "),
+        ];
+        // The trailing gap may run past the edge; the hint itself must not.
+        let needed: usize = hint[..3].iter().map(Span::width).sum();
+        if width + needed > area.width as usize {
+            break;
+        }
+        width += needed + hint[3].width();
+        spans.extend(hint);
+    }
+    frame.render_widget(Line::from(spans), area);
 }
 
 fn pane(title: &str, focused: bool) -> Block<'_> {
@@ -661,6 +700,26 @@ mod tests {
     }
 
     #[test]
+    fn key_hints_fit_the_width() {
+        let mut app = App::new();
+        let screen = render(&mut app);
+        let bottom = screen.lines().last().unwrap();
+        assert!(bottom.starts_with(" ↑↓ move  enter pick  /c search code  /r reflog  tab pane"));
+        assert!(bottom.contains("pgup/pgdn scroll"));
+        assert!(
+            !bottom.contains("sideways"),
+            "the last one doesn't fit 100 columns"
+        );
+
+        // Narrower: the least useful go, and no hint is cut in half.
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let bottom: String = (0..40).map(|x| buf[(x, 9)].symbol()).collect();
+        assert_eq!(bottom.trim_end(), " ↑↓ move  enter pick  /c search code");
+    }
+
+    #[test]
     fn log_error_shows_in_status() {
         let mut app = App::new();
         app.update(Msg::LogDone(0, Err("git log: boom".into())));
@@ -768,8 +827,8 @@ mod tests {
         let screen = render(&mut app);
         assert!(screen.contains("commit number 9"), "selected row visible");
         assert!(!screen.contains("commit number 29"), "top scrolled away");
-        // 24 rows: 3 for search, 2 borders, 19 list rows.
-        assert_eq!(app.commit_offset, 20 + 1 - 19);
+        // 24 rows: 3 for search, 2 borders, 1 for key hints, 18 list rows.
+        assert_eq!(app.commit_offset, 20 + 1 - 18);
     }
 
     #[test]
