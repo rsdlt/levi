@@ -2,6 +2,10 @@
 name = "levi"
 version = "0.1.0"
 edition = "2024"
+description = "A git diff viewer: commits, their files and diffs, with fzf-style search"
+license = "MIT"
+rust-version = "1.88"
+readme = "README.md"
 
 [dependencies]
 anyhow = "1.0.104"
