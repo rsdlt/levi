@@ -1,10 +1,10 @@
 //! Thin layer over the `git` CLI: repo discovery, streaming log, per-file diffs.
 
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, ErrorKind, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdout, Command, Output, Stdio};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 
 /// Separates commit records in the log stream. Can't appear in a NUL-delimited field
 /// produced by `-z`, and practically never appears in commit subjects.
@@ -80,18 +80,61 @@ fn git(root: &Path) -> Command {
 }
 
 fn run(cmd: &mut Command) -> Result<Vec<u8>> {
-    let out = cmd.output().context("failed to run git")?;
+    let out = output(cmd)?;
     if !out.status.success() {
         bail!("git: {}", String::from_utf8_lossy(&out.stderr).trim());
     }
     Ok(out.stdout)
 }
 
-/// Top-level directory of the repository containing `dir`.
+fn output(cmd: &mut Command) -> Result<Output> {
+    cmd.output().map_err(|e| match e.kind() {
+        ErrorKind::NotFound => anyhow!("git not found in PATH"),
+        _ => anyhow!("failed to run git: {e}"),
+    })
+}
+
+/// `--diff-merges` landed in git 2.31.
+const MIN_GIT: (u32, u32) = (2, 31);
+
+/// Fails with a readable message unless levi can run in `dir`. Returns the
+/// directory git commands should run from: the work tree's top level (log and
+/// diff paths are relative to it), or `dir` itself in a bare repository.
+pub fn preflight(dir: &Path) -> Result<PathBuf> {
+    let version = run(git(dir).arg("version"))?;
+    let version = String::from_utf8_lossy(&version);
+    if parse_version(&version).is_some_and(|v| v < MIN_GIT) {
+        bail!("needs git {}.{} or newer, found {}", MIN_GIT.0, MIN_GIT.1, version.trim());
+    }
+
+    let out = output(git(dir).args(["rev-parse", "--is-bare-repository"]))?;
+    if !out.status.success() {
+        bail!("not inside a git repository");
+    }
+    let root = if out.stdout.starts_with(b"true") {
+        dir.to_owned()
+    } else {
+        repo_root(dir)?
+    };
+
+    let head = output(git(&root).args(["rev-parse", "--verify", "--quiet", "HEAD"]))?;
+    if !head.status.success() {
+        bail!("no commits yet");
+    }
+    Ok(root)
+}
+
+/// Top-level directory of the work tree containing `dir`.
 pub fn repo_root(dir: &Path) -> Result<PathBuf> {
     let mut cmd = git(dir);
     let out = run(cmd.args(["rev-parse", "--show-toplevel"]))?;
     Ok(PathBuf::from(String::from_utf8_lossy(&out).trim_end()))
+}
+
+/// `git version 2.39.3 (Apple Git-146)` → (2, 39)
+fn parse_version(text: &str) -> Option<(u32, u32)> {
+    let mut parts = text.split_whitespace().nth(2)?.split('.');
+    Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
 }
 
 /// Starts `git log` for the current branch and returns a lazy stream of commits.
@@ -443,10 +486,46 @@ mod tests {
     }
 
     #[test]
-    fn not_a_repo() {
+    fn preflight_errors() {
         let dir = TempDir::new().unwrap();
-        let err = repo_root(dir.path()).unwrap_err().to_string();
-        assert!(err.contains("not a git repository"), "{err}");
+        let err = preflight(dir.path()).unwrap_err().to_string();
+        assert_eq!(err, "not inside a git repository");
+
+        let repo = Repo::new();
+        let err = preflight(repo.path()).unwrap_err().to_string();
+        assert_eq!(err, "no commits yet");
+
+        repo.write("a", "a\n");
+        repo.commit("a");
+        let root = preflight(&repo.path().join(".git")).unwrap_err().to_string();
+        assert!(root.contains("work tree"), "inside .git is neither bare nor a work tree: {root}");
+        let root = preflight(repo.path()).unwrap();
+        assert_eq!(root.canonicalize().unwrap(), repo.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn bare_repository() {
+        let repo = Repo::new();
+        repo.write("a.txt", "a\n");
+        repo.commit("in a bare repo");
+        let bare = TempDir::new().unwrap();
+        let bare_path = bare.path().join("r.git");
+        repo.git(&["clone", "-q", "--bare", ".", bare_path.to_str().unwrap()]);
+
+        let root = preflight(&bare_path).unwrap();
+        let commits: Vec<_> = log(&root).unwrap().collect::<Result<_>>().unwrap();
+        assert_eq!(commits[0].subject, "in a bare repo");
+        let d = diff(&root, &commits[0].sha, &commits[0].files[0]).unwrap();
+        assert!(d.contains("+a"));
+    }
+
+    #[test]
+    fn version_parsing() {
+        assert_eq!(parse_version("git version 2.56.0\n"), Some((2, 56)));
+        assert_eq!(parse_version("git version 2.39.3 (Apple Git-146)"), Some((2, 39)));
+        assert_eq!(parse_version("git version 2.45.2.windows.1"), Some((2, 45)));
+        assert_eq!(parse_version("nonsense"), None);
+        assert!(Some((2, 30)) < Some(MIN_GIT));
     }
 
     #[test]

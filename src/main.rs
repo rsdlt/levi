@@ -9,6 +9,7 @@ mod testutil;
 
 use std::io::{self, Stderr};
 use std::path::PathBuf;
+use std::process::ExitCode;
 use std::sync::mpsc;
 
 use anyhow::Result;
@@ -23,8 +24,56 @@ use app::{App, Exit};
 
 type Tui = Terminal<CrosstermBackend<Stderr>>;
 
-fn main() -> Result<()> {
-    let root = git::repo_root(&std::env::current_dir()?)?;
+const HELP: &str = "\
+levi — commits, their files and diffs, with fuzzy search. Small, swift, precise.
+
+Usage: levi    (run inside a git repository)
+
+Type to filter commits by subject, author, sha prefix or touched files.
+fzf syntax: 'exact  ^prefix  suffix$  !negate  (space-separated terms all match)
+
+Keys:
+  ↑/↓  C-p/C-n        move in the focused pane
+  Tab/S-Tab  ←/→      switch pane
+  PgUp/PgDn  C-u/C-d  scroll the diff
+  Enter               print the selected sha and quit:  git show $(levi)
+  Esc                 clear the query, or quit
+  C-c                 quit
+
+Exits 130 when quit without picking a commit, like fzf.
+";
+
+fn main() -> ExitCode {
+    match std::env::args().nth(1).as_deref() {
+        None => {}
+        Some("-h" | "--help") => {
+            print!("{HELP}");
+            return ExitCode::SUCCESS;
+        }
+        Some("-V" | "--version") => {
+            println!("levi {}", env!("CARGO_PKG_VERSION"));
+            return ExitCode::SUCCESS;
+        }
+        Some(arg) => {
+            eprintln!("levi: unexpected argument '{arg}' (see --help)");
+            return ExitCode::from(2);
+        }
+    }
+    match try_main() {
+        Ok(Exit::Pick(sha)) => {
+            println!("{sha}");
+            ExitCode::SUCCESS
+        }
+        Ok(Exit::Quit) => ExitCode::from(130),
+        Err(e) => {
+            eprintln!("levi: {e:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn try_main() -> Result<Exit> {
+    let root = git::preflight(&std::env::current_dir()?)?;
     let mut app = App::new();
 
     let mut terminal = init()?;
@@ -32,10 +81,7 @@ fn main() -> Result<()> {
     restore();
 
     result?;
-    if let Some(Exit::Pick(sha)) = app.exit {
-        println!("{sha}");
-    }
-    Ok(())
+    Ok(app.exit.unwrap_or(Exit::Quit))
 }
 
 fn run(terminal: &mut Tui, app: &mut App, root: PathBuf) -> Result<()> {

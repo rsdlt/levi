@@ -94,6 +94,7 @@ src/
   app.rs     – state: query, filtered views, selections, focus, scroll, diff LRU
   ui.rs      – layout and rendering of the 4 widgets
   testutil.rs – throwaway git repos for tests
+tests/cli.rs – runs the binary: errors, flags, exit codes
 ```
 
 `App` is thread-free: it consumes `Msg`s and exposes `take_diff_request()`; `main` forwards
@@ -109,6 +110,18 @@ full log streamed in ~5s (bounded by `git log` itself), ~75 MB RSS, 1.2 MB binar
 3. Async log loading + diff cache.
 4. Search + filtering + match highlighting.
 5. Polish: non-git dir / empty repo errors, status line (`123/4567 commits`), smoke test on a large repo.
+
+All five steps are done.
+
+## CLI behaviour
+
+- `levi` takes no arguments; `-h/--help` and `-V/--version` only. Anything else exits 2.
+- Before the TUI starts, a preflight check fails with a one-line `levi: …` on stderr (exit 1):
+  `git not found in PATH`, `needs git 2.31 or newer`, `not inside a git repository`, `no commits yet`.
+- Bare repositories work (commands run from the bare dir instead of a work tree's top level).
+- Exit codes: 0 with a picked sha on stdout, 130 when quit without picking (like fzf), so
+  `sha=$(levi) && git show "$sha"` stops cleanly.
+- Integration tests in `tests/cli.rs` run the real binary for every pre-TUI path.
 
 ## Later (not now)
 
