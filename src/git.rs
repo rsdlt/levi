@@ -259,53 +259,9 @@ pub fn diff(root: &Path, sha: &str, file: &FileChange) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::Repo;
     use std::fs;
     use tempfile::TempDir;
-
-    struct Repo {
-        dir: TempDir,
-    }
-
-    impl Repo {
-        fn new() -> Repo {
-            let repo = Repo {
-                dir: TempDir::new().unwrap(),
-            };
-            repo.git(&["init", "-q", "-b", "main"]);
-            repo
-        }
-
-        fn path(&self) -> &Path {
-            self.dir.path()
-        }
-
-        fn git(&self, args: &[&str]) {
-            let status = Command::new("git")
-                .current_dir(self.path())
-                .args(["-c", "user.name=Levi", "-c", "user.email=levi@scouts"])
-                .args(["-c", "commit.gpgsign=false"])
-                .args(args)
-                .stdout(Stdio::null())
-                .status()
-                .unwrap();
-            assert!(status.success(), "git {args:?} failed");
-        }
-
-        fn write(&self, path: &str, content: &str) {
-            let full = self.path().join(path);
-            fs::create_dir_all(full.parent().unwrap()).unwrap();
-            fs::write(full, content).unwrap();
-        }
-
-        fn commit(&self, msg: &str) {
-            self.git(&["add", "-A"]);
-            self.git(&["commit", "-q", "--allow-empty", "-m", msg]);
-        }
-
-        fn log(&self) -> Vec<Commit> {
-            log(self.path()).unwrap().collect::<Result<_>>().unwrap()
-        }
-    }
 
     fn change(status: Status, path: &str) -> FileChange {
         FileChange {
