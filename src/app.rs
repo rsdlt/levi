@@ -4,7 +4,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::mem;
 use std::time::{Duration, Instant};
 
-use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui::layout::{Position, Rect};
 
 use crate::filter::{self, Filter, Hit};
 use crate::git::{Commit, DiffLine, FileChange, LineKind};
@@ -16,6 +19,8 @@ const DIFF_CACHE_SIZE: usize = 128;
 pub const CODE_DEBOUNCE: Duration = Duration::from_millis(300);
 /// Lines kept above a code match when the diff jumps to it.
 const JUMP_CONTEXT: usize = 3;
+/// Diff lines one notch of the mouse wheel scrolls.
+const WHEEL_LINES: isize = 3;
 
 /// (commit sha, file path), or an empty path for a commit without files.
 pub type DiffKey = (String, String);
@@ -178,6 +183,9 @@ pub struct App {
     pub diff_scroll: usize,
     /// Rows visible in the diff pane, updated on every draw.
     pub diff_height: usize,
+    /// Where the commits, files and diff panes are on screen, updated on every
+    /// draw, so clicks can find their target.
+    pub panes: [Rect; 3],
     pub exit: Option<Exit>,
     diffs: DiffCache,
     /// Last diff handed out by `take_diff_request`.
@@ -213,6 +221,7 @@ impl App {
             file_offset: 0,
             diff_scroll: 0,
             diff_height: 0,
+            panes: [Rect::default(); 3],
             exit: None,
             diffs: DiffCache::default(),
             requested: None,
@@ -239,6 +248,10 @@ impl App {
                     self.settle();
                 }
                 self.handle_key(key);
+            }
+            Msg::Input(Event::Mouse(mouse)) => {
+                self.settle();
+                self.handle_mouse(mouse);
             }
             Msg::Input(_) => {}
             // Leftovers from a load that was superseded.
@@ -567,8 +580,46 @@ impl App {
         }
     }
 
+    /// Clicks select a row and focus its pane; the wheel acts on the pane
+    /// under the pointer without moving focus.
+    fn handle_mouse(&mut self, mouse: MouseEvent) {
+        let at = Position::new(mouse.column, mouse.row);
+        let Some(i) = self.panes.iter().position(|p| p.contains(at)) else {
+            return;
+        };
+        let pane = [Focus::Commits, Focus::Files, Focus::Diff][i];
+        match mouse.kind {
+            MouseEventKind::ScrollDown if pane == Focus::Diff => self.scroll_diff(WHEEL_LINES),
+            MouseEventKind::ScrollUp if pane == Focus::Diff => self.scroll_diff(-WHEEL_LINES),
+            MouseEventKind::ScrollDown => self.move_in(pane, 1),
+            MouseEventKind::ScrollUp => self.move_in(pane, -1),
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.focus = pane;
+                let (current, offset, len) = match pane {
+                    Focus::Commits => (self.commit_idx, self.commit_offset, self.view.len()),
+                    Focus::Files => (self.file_idx, self.file_offset, self.files().len()),
+                    Focus::Diff => return,
+                };
+                // Rows sit between the pane's top and bottom borders.
+                let row = mouse.row - self.panes[i].y;
+                if !(1..self.panes[i].height.saturating_sub(1)).contains(&row) {
+                    return;
+                }
+                let target = offset + row as usize - 1;
+                if target < len {
+                    self.move_in(pane, target as isize - current as isize);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn move_selection(&mut self, delta: isize) {
-        match self.focus {
+        self.move_in(self.focus, delta);
+    }
+
+    fn move_in(&mut self, pane: Focus, delta: isize) {
+        match pane {
             Focus::Commits => {
                 let idx = step(self.commit_idx, delta, self.view.len());
                 if idx != self.commit_idx {

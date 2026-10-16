@@ -7,6 +7,12 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+### Added
+
+- Mouse support: click a commit or file to select it, and use the wheel to move through a
+  list or scroll the diff. To select text, hold your terminal's modifier while dragging
+  (`Option` in iTerm2, `Fn` in Terminal.app, `Shift` in most others).
+
 ### Fixed
 
 - levi no longer crashes when the terminal is too small to show any list rows.

@@ -46,6 +46,11 @@ he'll tell you in one line and leave. He doesn't do small talk.
 | `Enter` | print the selected commit's sha and quit |
 | `Esc` | clear the search, or quit if it's empty |
 | `C-c` | quit |
+| click | select a commit or file, or focus the diff |
+| wheel | move the list under the pointer, or scroll the diff |
+
+levi takes the mouse, so to select text with it, hold a modifier while you drag: `Option` in
+iTerm2, `Fn` in Terminal.app, `Shift` in most other terminals.
 
 `Enter` prints the sha to stdout, so levi works as a picker. Choose the commit; you won't regret
 it.

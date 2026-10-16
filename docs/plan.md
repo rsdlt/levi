@@ -79,6 +79,14 @@ Details settled while building:
 | `Enter` | print the selected sha to stdout and quit (`git checkout $(levi)`) |
 | `Esc` | clear the query, or quit if it's already empty |
 | `C-c` | quit |
+| click | select a commit/file and focus its pane; focus the diff |
+| wheel | over a list, move its selection; over the diff, scroll 3 lines. Focus stays put |
+
+Mouse capture is on for the whole session and off on every exit (panics too). Motion and drag
+events are dropped in the input thread, since capture reports every movement and each would
+cost a redraw. The renderer records the three pane rects in `App::panes` for hit-testing.
+Native text selection needs a modifier (Option / Fn / Shift, per terminal); the sha, the thing
+usually copied, comes out on stdout anyway.
 
 ## Crates
 

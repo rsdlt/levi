@@ -18,6 +18,7 @@ use std::time::Instant;
 use anyhow::{Result, bail};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -47,6 +48,8 @@ Keys:
   Enter               print the selected sha and quit:  git show $(levi)
   Esc                 clear the query, or quit
   C-c                 quit
+  click               select a commit or file
+  wheel               move a list, or scroll the diff
 
 Exits 130 when quit without picking a commit, like fzf.
 ";
@@ -141,11 +144,11 @@ fn init() -> Result<Tui> {
         hook(info);
     }));
     enable_raw_mode()?;
-    execute!(io::stderr(), EnterAlternateScreen)?;
+    execute!(io::stderr(), EnterAlternateScreen, EnableMouseCapture)?;
     Ok(Terminal::new(CrosstermBackend::new(io::stderr()))?)
 }
 
 fn restore() {
     let _ = disable_raw_mode();
-    let _ = execute!(io::stderr(), LeaveAlternateScreen);
+    let _ = execute!(io::stderr(), DisableMouseCapture, LeaveAlternateScreen);
 }

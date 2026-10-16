@@ -23,6 +23,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Constraint::Percentage(55),
     ])
     .areas(body);
+    app.panes = [commits, files, diff];
 
     draw_search(frame, app, search);
     draw_commits(frame, app, commits);
@@ -357,12 +358,14 @@ fn line_style(kind: LineKind) -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{Exit, Msg};
+    use crate::app::{Exit, Focus, Msg};
     use crate::git;
     use crate::testutil::Repo;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::crossterm::event::{
+        Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
 
     fn render(app: &mut App) -> String {
         app.settle();
@@ -493,6 +496,68 @@ mod tests {
             .map(|p| buf[p].symbol().to_owned())
             .collect();
         assert_eq!(reversed, "12");
+    }
+
+    fn mouse(app: &mut App, kind: MouseEventKind, column: u16, row: u16) {
+        app.update(Msg::Input(Event::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })));
+    }
+
+    #[test]
+    fn mouse_clicks_and_scrolls() {
+        let repo = titans();
+        let mut app = App::new();
+        app.update(Msg::Commits(0, repo.log()));
+        app.update(Msg::LogDone(0, Ok(())));
+        let screen = render(&mut app);
+        let rows: Vec<&str> = screen.lines().collect();
+        let row_of = |text: &str| rows.iter().position(|r| r.contains(text)).unwrap() as u16;
+        let click = MouseEventKind::Down(MouseButton::Left);
+
+        // Click the oldest commit: selected, and the commits pane has focus.
+        mouse(&mut app, click, 2, row_of("initial import"));
+        assert_eq!(app.commit().unwrap().subject, "initial import");
+        assert_eq!(app.focus, Focus::Commits);
+
+        // Click its second file: the files pane gets focus.
+        render(&mut app);
+        let files_x = app.panes[1].x + 2;
+        // First row inside the border.
+        let top = app.panes[1].y + 1;
+        mouse(&mut app, click, files_x, top + 1);
+        assert_eq!(app.focus, Focus::Files);
+        assert_eq!(app.file().unwrap().path, "src/parse.rs");
+        mouse(&mut app, click, files_x, top);
+        assert_eq!(app.file().unwrap().path, "README.md");
+
+        // The border and empty rows below the list select nothing.
+        mouse(&mut app, click, files_x, top - 1);
+        mouse(&mut app, click, files_x, top + 2);
+        assert_eq!(app.file().unwrap().path, "README.md");
+
+        // The wheel moves the list under the pointer, not the focused one.
+        mouse(&mut app, MouseEventKind::ScrollUp, 2, 10);
+        assert_eq!(app.commit().unwrap().subject, "tweak things");
+        assert_eq!(app.focus, Focus::Files);
+
+        // Over the diff, it scrolls a few lines at a time.
+        serve_diffs(&mut app, &repo);
+        render(&mut app);
+        let diff_x = app.panes[2].x + 2;
+        mouse(&mut app, MouseEventKind::ScrollDown, diff_x, 10);
+        assert_eq!(app.diff_scroll, 3);
+        mouse(&mut app, MouseEventKind::ScrollUp, diff_x, 10);
+        assert_eq!(app.diff_scroll, 0);
+
+        // Clicking the diff focuses it; the search bar ignores clicks.
+        mouse(&mut app, click, diff_x, 10);
+        assert_eq!(app.focus, Focus::Diff);
+        mouse(&mut app, click, 2, 1);
+        assert_eq!(app.focus, Focus::Diff);
     }
 
     #[test]
