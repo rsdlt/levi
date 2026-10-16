@@ -7,6 +7,8 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-16
+
 ### Added
 
 - An optional revision argument: `levi main..HEAD` shows only what your branch adds, `levi v1.0..`
@@ -100,7 +102,8 @@ First release.
 - `--help` and `--version`.
 - `cargo deny` configuration for license, advisory and source checks.
 
-[Unreleased]: https://github.com/rsdlt/levi/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/rsdlt/levi/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/rsdlt/levi/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/rsdlt/levi/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/rsdlt/levi/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/rsdlt/levi/compare/v0.5.0...v0.6.0
