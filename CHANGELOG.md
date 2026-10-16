@@ -7,6 +7,8 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-16
+
 ### Changed
 
 - History loads on every core at once. On git.git (82k commits) the whole log, file lists
@@ -48,6 +50,7 @@ First release.
 - `--help` and `--version`.
 - `cargo deny` configuration for license, advisory and source checks.
 
-[Unreleased]: https://github.com/rsdlt/levi/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/rsdlt/levi/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/rsdlt/levi/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/rsdlt/levi/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/rsdlt/levi/releases/tag/v0.1.0
