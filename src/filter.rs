@@ -130,7 +130,11 @@ impl Filter {
         if self.is_empty() {
             return Vec::new();
         }
-        let matcher = if is_path { &mut self.paths } else { &mut self.text };
+        let matcher = if is_path {
+            &mut self.paths
+        } else {
+            &mut self.text
+        };
         let mut indices = Vec::new();
         self.pattern
             .indices(Utf32Str::new(text, &mut self.buf), matcher, &mut indices);
@@ -225,7 +229,11 @@ mod tests {
 
     #[test]
     fn file_match_shows_only_matching_files() {
-        let c = commit("abcdef0123", "refactor", &["src/parse.rs", "README.md", "src/ui.rs"]);
+        let c = commit(
+            "abcdef0123",
+            "refactor",
+            &["src/parse.rs", "README.md", "src/ui.rs"],
+        );
         let h = hit(&mut Filter::new(), "parse.rs", &c).unwrap();
         assert_eq!(h.files, Some(vec![0]));
         assert!(hit(&mut Filter::new(), "zzz", &c).is_none());
@@ -235,13 +243,19 @@ mod tests {
     fn renamed_files_match_old_path() {
         let mut c = commit("abcdef0123", "move", &["new/place.rs"]);
         c.files[0].old_path = Some("old/spot.rs".into());
-        assert_eq!(hit(&mut Filter::new(), "spot", &c).unwrap().files, Some(vec![0]));
+        assert_eq!(
+            hit(&mut Filter::new(), "spot", &c).unwrap().files,
+            Some(vec![0])
+        );
     }
 
     #[test]
     fn sha_prefix_but_not_fuzzy_sha() {
         let c = commit("deadbeef00", "zzz", &["x"]);
-        assert_eq!(hit(&mut Filter::new(), "DEADbe", &c).unwrap().score, u32::MAX);
+        assert_eq!(
+            hit(&mut Filter::new(), "DEADbe", &c).unwrap().score,
+            u32::MAX
+        );
         // Too short to be a sha, and not fuzzy-matched against the hash.
         assert!(hit(&mut Filter::new(), "dea", &c).is_none());
         assert!(hit(&mut Filter::new(), "dbf0", &c).is_none());
@@ -252,7 +266,10 @@ mod tests {
         let c = commit("abcdef0123", "add wall maria", &["walls.rs"]);
         let mut f = Filter::new();
         assert!(hit(&mut f, "'wall ^add", &c).is_some());
-        assert!(hit(&mut f, "!maria", &c).is_some(), "file still matches the negation");
+        assert!(
+            hit(&mut f, "!maria", &c).is_some(),
+            "file still matches the negation"
+        );
         assert!(hit(&mut f, "!wall", &c).is_none());
         assert!(hit(&mut f, "Wall", &c).is_none(), "smart case");
     }
@@ -285,9 +302,21 @@ mod tests {
     #[test]
     fn sort_by_score_then_log_order() {
         let mut hits = vec![
-            Hit { commit: 2, score: 5, files: None },
-            Hit { commit: 0, score: 1, files: None },
-            Hit { commit: 1, score: 5, files: None },
+            Hit {
+                commit: 2,
+                score: 5,
+                files: None,
+            },
+            Hit {
+                commit: 0,
+                score: 1,
+                files: None,
+            },
+            Hit {
+                commit: 1,
+                score: 5,
+                files: None,
+            },
         ];
         sort(&mut hits);
         let order: Vec<_> = hits.iter().map(|h| h.commit).collect();
@@ -297,14 +326,26 @@ mod tests {
     #[test]
     fn parallel_matches_sequential() {
         let commits: Vec<_> = (0..10_000)
-            .map(|n| commit("abcdef0123", &format!("change {n}"), &[&format!("src/m{}.rs", n % 7)]))
+            .map(|n| {
+                commit(
+                    "abcdef0123",
+                    &format!("change {n}"),
+                    &[&format!("src/m{}.rs", n % 7)],
+                )
+            })
             .collect();
         let candidates: Vec<_> = (0..commits.len()).rev().collect();
         let mut f = Filter::new();
         f.set_query("3");
-        let sequential: Vec<_> = candidates.iter().filter_map(|&i| f.matches(i, &commits[i])).collect();
+        let sequential: Vec<_> = candidates
+            .iter()
+            .filter_map(|&i| f.matches(i, &commits[i]))
+            .collect();
         assert!(sequential.iter().any(|h| h.files.is_none()), "header hits");
-        assert!(sequential.iter().any(|h| h.files.is_some()), "file-only hits");
+        assert!(
+            sequential.iter().any(|h| h.files.is_some()),
+            "file-only hits"
+        );
         assert_eq!(par_matches("3", &commits, &candidates), sequential);
     }
 }

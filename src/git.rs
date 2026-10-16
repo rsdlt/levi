@@ -104,7 +104,12 @@ pub fn preflight(dir: &Path) -> Result<PathBuf> {
     let version = run(git(dir).arg("version"))?;
     let version = String::from_utf8_lossy(&version);
     if parse_version(&version).is_some_and(|v| v < MIN_GIT) {
-        bail!("needs git {}.{} or newer, found {}", MIN_GIT.0, MIN_GIT.1, version.trim());
+        bail!(
+            "needs git {}.{} or newer, found {}",
+            MIN_GIT.0,
+            MIN_GIT.1,
+            version.trim()
+        );
     }
 
     let out = output(git(dir).args(["rev-parse", "--is-bare-repository"]))?;
@@ -245,7 +250,11 @@ impl<R: BufRead> Iterator for Records<R> {
 fn parse_record(record: &[u8]) -> Result<Commit> {
     let text = String::from_utf8_lossy(record);
     let mut tokens = text.split('\0');
-    let mut field = |name| tokens.next().with_context(|| format!("log record missing {name}"));
+    let mut field = |name| {
+        tokens
+            .next()
+            .with_context(|| format!("log record missing {name}"))
+    };
     let mut commit = Commit {
         sha: field("sha")?.to_owned(),
         short: field("short sha")?.to_owned(),
@@ -255,7 +264,9 @@ fn parse_record(record: &[u8]) -> Result<Commit> {
         files: Vec::new(),
     };
 
-    let mut tokens = tokens.map(|t| t.trim_start_matches('\n')).filter(|t| !t.is_empty());
+    let mut tokens = tokens
+        .map(|t| t.trim_start_matches('\n'))
+        .filter(|t| !t.is_empty());
     while let Some(token) = tokens.next() {
         let status = Status::parse(token);
         let first = tokens.next().context("log record: status without path")?;
@@ -373,7 +384,10 @@ mod tests {
         assert_eq!(c.subject, "first blood");
         assert_eq!(
             c.files,
-            vec![change(Status::Added, "a.txt"), change(Status::Added, "dir/b.txt")]
+            vec![
+                change(Status::Added, "a.txt"),
+                change(Status::Added, "dir/b.txt")
+            ]
         );
 
         let d = diff(repo.path(), &c.sha, &c.files[0]).unwrap();
@@ -397,7 +411,10 @@ mod tests {
         assert_eq!(subjects, ["two", "one"]);
         assert_eq!(
             commits[0].files,
-            vec![change(Status::Deleted, "gone.txt"), change(Status::Modified, "keep.txt")]
+            vec![
+                change(Status::Deleted, "gone.txt"),
+                change(Status::Modified, "keep.txt")
+            ]
         );
     }
 
@@ -469,7 +486,10 @@ mod tests {
         let c = &repo.log()[0];
         assert_eq!(c.subject, "weird names ✨");
         let paths: Vec<_> = c.files.iter().map(|f| f.path.as_str()).collect();
-        assert_eq!(paths, ["glob*.txt", "globby.txt", "with space.txt", "ünïcødé.txt"]);
+        assert_eq!(
+            paths,
+            ["glob*.txt", "globby.txt", "with space.txt", "ünïcødé.txt"]
+        );
 
         // `*` must be taken literally, not as a glob matching globby.txt.
         let d = diff(repo.path(), &c.sha, &c.files[0]).unwrap();
@@ -482,7 +502,10 @@ mod tests {
         let repo = Repo::new();
         repo.write("deep/er/file", "x\n");
         let root = repo_root(&repo.path().join("deep/er")).unwrap();
-        assert_eq!(root.canonicalize().unwrap(), repo.path().canonicalize().unwrap());
+        assert_eq!(
+            root.canonicalize().unwrap(),
+            repo.path().canonicalize().unwrap()
+        );
     }
 
     #[test]
@@ -497,10 +520,18 @@ mod tests {
 
         repo.write("a", "a\n");
         repo.commit("a");
-        let root = preflight(&repo.path().join(".git")).unwrap_err().to_string();
-        assert!(root.contains("work tree"), "inside .git is neither bare nor a work tree: {root}");
+        let root = preflight(&repo.path().join(".git"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            root.contains("work tree"),
+            "inside .git is neither bare nor a work tree: {root}"
+        );
         let root = preflight(repo.path()).unwrap();
-        assert_eq!(root.canonicalize().unwrap(), repo.path().canonicalize().unwrap());
+        assert_eq!(
+            root.canonicalize().unwrap(),
+            repo.path().canonicalize().unwrap()
+        );
     }
 
     #[test]
@@ -522,7 +553,10 @@ mod tests {
     #[test]
     fn version_parsing() {
         assert_eq!(parse_version("git version 2.56.0\n"), Some((2, 56)));
-        assert_eq!(parse_version("git version 2.39.3 (Apple Git-146)"), Some((2, 39)));
+        assert_eq!(
+            parse_version("git version 2.39.3 (Apple Git-146)"),
+            Some((2, 39))
+        );
         assert_eq!(parse_version("git version 2.45.2.windows.1"), Some((2, 45)));
         assert_eq!(parse_version("nonsense"), None);
         assert!(Some((2, 30)) < Some(MIN_GIT));
@@ -553,7 +587,10 @@ mod tests {
         let text = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n ctx\tx\r\n";
         let kinds: Vec<_> = parse_diff(text).iter().map(|l| l.kind).collect();
         use LineKind::*;
-        assert_eq!(kinds, [Header, Header, Header, Hunk, Removed, Added, Context]);
+        assert_eq!(
+            kinds,
+            [Header, Header, Header, Hunk, Removed, Added, Context]
+        );
         assert_eq!(parse_diff(text)[6].text, " ctx    x");
     }
 }

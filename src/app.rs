@@ -174,7 +174,11 @@ impl App {
         if !self.filter.is_empty() {
             filter::sort(&mut self.view);
             if let Some(selected) = selected {
-                self.commit_idx = self.view.iter().position(|h| h.commit == selected).unwrap_or(0);
+                self.commit_idx = self
+                    .view
+                    .iter()
+                    .position(|h| h.commit == selected)
+                    .unwrap_or(0);
             }
         }
     }
@@ -380,17 +384,40 @@ mod bench {
             return;
         };
         let t = Instant::now();
-        let commits: Vec<Commit> = crate::git::log(path.as_ref()).unwrap().map(Result::unwrap).collect();
+        let commits: Vec<Commit> = crate::git::log(path.as_ref())
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
         let files: usize = commits.iter().map(|c| c.files.len()).sum();
-        println!("load: {} commits, {files} files in {:?}", commits.len(), t.elapsed());
+        println!(
+            "load: {} commits, {files} files in {:?}",
+            commits.len(),
+            t.elapsed()
+        );
 
         let mut app = App::new();
         app.update(Msg::Commits(commits));
-        for query in ["e", "pa", "par", "pars", "parse", "parse.c", "Documentation/", "!t", "zzzzz", "", "junio"] {
+        for query in [
+            "e",
+            "pa",
+            "par",
+            "pars",
+            "parse",
+            "parse.c",
+            "Documentation/",
+            "!t",
+            "zzzzz",
+            "",
+            "junio",
+        ] {
             app.query = query.into();
             let t = Instant::now();
             app.settle();
-            println!("{query:>16}: {:>6} hits in {:?}", app.view.len(), t.elapsed());
+            println!(
+                "{query:>16}: {:>6} hits in {:?}",
+                app.view.len(),
+                t.elapsed()
+            );
         }
     }
 }

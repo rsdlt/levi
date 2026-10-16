@@ -31,7 +31,12 @@ fn outside_a_repository() {
 #[test]
 fn repository_without_commits() {
     let dir = TempDir::new().unwrap();
-    Command::new("git").arg("init").arg("-q").current_dir(dir.path()).status().unwrap();
+    Command::new("git")
+        .arg("init")
+        .arg("-q")
+        .current_dir(dir.path())
+        .status()
+        .unwrap();
     let out = levi(dir.path(), &[]);
     assert_eq!(out.status.code(), Some(1));
     assert_eq!(stderr(&out), "levi: no commits yet\n");

@@ -12,8 +12,8 @@ use crate::git::{LineKind, Status};
 const ACCENT: Color = Color::Cyan;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    let [search, body] = Layout::vertical([Constraint::Length(3), Constraint::Min(0)])
-        .areas(frame.area());
+    let [search, body] =
+        Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).areas(frame.area());
     let [commits, files, diff] = Layout::horizontal([
         Constraint::Percentage(25),
         Constraint::Percentage(20),
@@ -30,7 +30,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 fn pane(title: &str, focused: bool) -> Block<'_> {
     let block = Block::bordered().title(format!(" {title} "));
     if focused {
-        block.border_style(Style::new().fg(ACCENT)).title_style(Modifier::BOLD)
+        block
+            .border_style(Style::new().fg(ACCENT))
+            .title_style(Modifier::BOLD)
     } else {
         block.border_style(Style::new().dark_gray())
     }
@@ -38,7 +40,9 @@ fn pane(title: &str, focused: bool) -> Block<'_> {
 
 fn highlight(focused: bool) -> Style {
     if focused {
-        Style::new().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+        Style::new()
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::new().add_modifier(Modifier::REVERSED | Modifier::DIM)
     }
@@ -78,8 +82,17 @@ fn follow(offset: &mut usize, selected: usize, height: usize) {
 
 /// Renders rows `offset..` of a list whose items were built for that window only,
 /// so cost doesn't grow with the length of the log.
-fn draw_window(frame: &mut Frame, area: Rect, block: Block, items: Vec<ListItem>, row: usize, focused: bool) {
-    let list = List::new(items).block(block).highlight_style(highlight(focused));
+fn draw_window(
+    frame: &mut Frame,
+    area: Rect,
+    block: Block,
+    items: Vec<ListItem>,
+    row: usize,
+    focused: bool,
+) {
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(highlight(focused));
     let mut state = ListState::default().with_selected(Some(row));
     frame.render_stateful_widget(list, area, &mut state);
 }
@@ -90,7 +103,12 @@ fn draw_commits(frame: &mut Frame, app: &mut App, area: Rect) {
     let height = block.inner(area).height as usize;
     follow(&mut app.commit_offset, app.commit_idx, height);
 
-    let App { view, commits, filter, .. } = app;
+    let App {
+        view,
+        commits,
+        filter,
+        ..
+    } = app;
     let mut items: Vec<ListItem> = view
         .iter()
         .skip(app.commit_offset)
@@ -103,12 +121,19 @@ fn draw_commits(frame: &mut Frame, app: &mut App, area: Rect) {
                 Style::new().fg(Color::Yellow)
             };
             let mut spans = vec![Span::styled(c.short.as_str(), sha_style), Span::raw(" ")];
-            spans.extend(highlighted(&c.subject, &filter.highlights(&c.subject, false), Style::new()));
+            spans.extend(highlighted(
+                &c.subject,
+                &filter.highlights(&c.subject, false),
+                Style::new(),
+            ));
             ListItem::new(Line::from(spans))
         })
         .collect();
     if items.is_empty() && !app.query.trim().is_empty() && !app.loading {
-        items.push(ListItem::new(Line::styled("no matches", Style::new().dim())));
+        items.push(ListItem::new(Line::styled(
+            "no matches",
+            Style::new().dim(),
+        )));
     }
     let row = app.commit_idx - app.commit_offset;
     draw_window(frame, area, block, items, row, focused);
@@ -120,13 +145,21 @@ fn draw_files(frame: &mut Frame, app: &mut App, area: Rect) {
     let height = block.inner(area).height as usize;
     follow(&mut app.file_offset, app.file_idx, height);
 
-    let App { view, commits, filter, .. } = app;
+    let App {
+        view,
+        commits,
+        filter,
+        ..
+    } = app;
     let Some(hit) = view.get(app.commit_idx) else {
         frame.render_widget(block, area);
         return;
     };
     let files = &commits[hit.commit].files;
-    let shown: Vec<usize> = hit.files.clone().unwrap_or_else(|| (0..files.len()).collect());
+    let shown: Vec<usize> = hit
+        .files
+        .clone()
+        .unwrap_or_else(|| (0..files.len()).collect());
     let items: Vec<ListItem> = shown
         .iter()
         .skip(app.file_offset)
@@ -138,10 +171,18 @@ fn draw_files(frame: &mut Frame, app: &mut App, area: Rect) {
                 Span::raw(" "),
             ];
             if let Some(old) = &f.old_path {
-                spans.extend(highlighted(old, &filter.highlights(old, true), Style::new().dim()));
+                spans.extend(highlighted(
+                    old,
+                    &filter.highlights(old, true),
+                    Style::new().dim(),
+                ));
                 spans.push(Span::styled(" → ", Style::new().dim()));
             }
-            spans.extend(highlighted(&f.path, &filter.highlights(&f.path, true), Style::new()));
+            spans.extend(highlighted(
+                &f.path,
+                &filter.highlights(&f.path, true),
+                Style::new(),
+            ));
             ListItem::new(Line::from(spans))
         })
         .collect();
@@ -150,7 +191,9 @@ fn draw_files(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn matched(style: Style) -> Style {
-    style.fg(Color::Magenta).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    style
+        .fg(Color::Magenta)
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
 }
 
 /// Splits `text` into spans, marking the chars at `positions` (sorted).

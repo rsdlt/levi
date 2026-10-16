@@ -53,4 +53,3 @@ impl Repo {
         log(self.path()).unwrap().collect::<Result<_>>().unwrap()
     }
 }
-
