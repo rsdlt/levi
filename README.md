@@ -92,10 +92,10 @@ the spot.
 
 ## Field report
 
-- **Swift.** It opens instantly on huge repositories: the log streams in while you're already
-  browsing, and diffs load in the background. git.git, with 82k commits, is his Beast Titan.
-  The first screen lands in under 0.1 s and every search takes 5–12 ms, so it's over before
-  the boulders start flying.
+- **Swift.** It opens instantly on huge repositories: history loads on every core at once
+  while you're already browsing, and diffs load in the background. git.git, with 82k commits,
+  is his Beast Titan. The first screen lands in 40 ms, the whole history in under a second,
+  and every search takes 5–12 ms, so it's over before the boulders start flying.
 - **Small.** About 1,100 lines of Rust (not counting tests) and a 1.6 MB binary. Short, and
   still the strongest.
 - **Relentless.** `/c` hunts through every diff in history on every core at once, and stops

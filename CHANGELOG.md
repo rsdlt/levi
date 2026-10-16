@@ -7,6 +7,12 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+### Changed
+
+- History loads on every core at once. On git.git (82k commits) the whole log, file lists
+  included, is ready in under a second instead of 5–9 seconds, so file search covers all of
+  history sooner and `/c` starts sooner.
+
 ## [0.2.0] - 2026-10-16
 
 ### Added

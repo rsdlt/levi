@@ -63,7 +63,8 @@ Details settled while building:
 
 ## Performance
 
-- A background thread streams `git log` and sends commits over an `mpsc` channel in batches. The UI is live immediately and fills in as data arrives.
+- The branch loads on every core: a producer streams `git rev-list HEAD` and cuts it into chunks (256 commits first, for a fast first frame, then 2048); one worker per core runs `git log --no-walk=unsorted --stdin --name-status` on a chunk at a time; a coordinator forwards finished chunks in log order. Same records as a single `git log`, verified by test. git.git: first batch in ~40 ms, all 82.5k commits in ~0.9 s (single `git log`: 5–9 s).
+- The reflog keeps a single streaming `git log --walk-reflogs`: it's short, and only a reflog walk knows each entry's action.
 - Diffs load lazily on a worker thread and are cached in an LRU keyed by `(sha, path)`.
 - Stale diff responses (selection moved on) are dropped, so fast navigation never stalls.
 

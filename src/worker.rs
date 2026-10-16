@@ -1,8 +1,8 @@
 //! Background threads. Everything reports back to the UI through one `Msg` channel.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::mem;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
@@ -10,10 +10,12 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use anyhow::Result;
 use ratatui::crossterm::event;
 
 use crate::app::{CodeRequest, DiffRequest, LogRequest, Msg};
-use crate::git;
+use crate::git::{self, Commit};
+use crate::query::Source;
 
 /// Commits per message during the initial burst...
 const BATCH_SIZE: usize = 512;
@@ -47,49 +49,163 @@ impl LogLoader {
         }
     }
 
-    /// Streams `req.source` in batches so the UI is usable before git finishes.
-    /// Any load already running stops at its next commit, killing its git.
+    /// Loads `req.source` in the background. Any load already running stops at
+    /// its next commit or chunk, killing its git.
     pub fn start(&self, req: LogRequest) {
         let LogRequest { source, generation } = req;
         self.current.store(generation, Ordering::SeqCst);
         let (root, tx, current) = (self.root.clone(), self.tx.clone(), self.current.clone());
+        let live = move || current.load(Ordering::SeqCst) == generation;
         thread::spawn(move || {
-            let stream = match git::log(&root, source) {
-                Ok(stream) => stream,
-                Err(e) => {
-                    let _ = tx.send(Msg::LogDone(generation, Err(e.to_string())));
-                    return;
-                }
+            let result = match source {
+                Source::Log => load_parallel(&root, &tx, generation, live, FIRST_CHUNK, LOG_CHUNK),
+                // The reflog is short, and only a reflog walk knows each entry's action.
+                Source::Reflog => load_serial(&root, &tx, generation, live),
             };
-            let mut batch = Vec::new();
-            let mut last_send = Instant::now();
-            for item in stream {
-                if current.load(Ordering::SeqCst) != generation {
-                    return;
-                }
-                match item {
-                    Ok(commit) => batch.push(commit),
-                    Err(e) => {
-                        let _ = tx.send(Msg::Commits(generation, batch));
-                        let _ = tx.send(Msg::LogDone(generation, Err(e.to_string())));
-                        return;
-                    }
-                }
-                if batch.len() >= BATCH_SIZE || last_send.elapsed() >= BATCH_INTERVAL {
-                    // A send error means the UI is gone; dropping the stream kills git.
-                    if tx
-                        .send(Msg::Commits(generation, mem::take(&mut batch)))
-                        .is_err()
-                    {
-                        return;
-                    }
-                    last_send = Instant::now();
-                }
+            if let Some(result) = result {
+                let _ = tx.send(Msg::LogDone(generation, result.map_err(|e| e.to_string())));
             }
-            let _ = tx.send(Msg::Commits(generation, batch));
-            let _ = tx.send(Msg::LogDone(generation, Ok(())));
         });
     }
+}
+
+/// Commits in the first chunk of a parallel load, kept small for a fast first frame.
+const FIRST_CHUNK: usize = 256;
+/// Commits per chunk after that.
+const LOG_CHUNK: usize = 2048;
+
+/// Streams one `git log` in batches. `None` if the load went stale.
+fn load_serial(
+    root: &Path,
+    tx: &Sender<Msg>,
+    generation: u64,
+    live: impl Fn() -> bool,
+) -> Option<Result<()>> {
+    let stream = match git::log(root, Source::Reflog) {
+        Ok(stream) => stream,
+        Err(e) => return Some(Err(e)),
+    };
+    let mut batch = Vec::new();
+    let mut last_send = Instant::now();
+    for item in stream {
+        if !live() {
+            return None;
+        }
+        match item {
+            Ok(commit) => batch.push(commit),
+            Err(e) => {
+                let _ = tx.send(Msg::Commits(generation, batch));
+                return Some(Err(e));
+            }
+        }
+        if batch.len() >= BATCH_SIZE || last_send.elapsed() >= BATCH_INTERVAL {
+            // A send error means the UI is gone; dropping the stream kills git.
+            tx.send(Msg::Commits(generation, mem::take(&mut batch)))
+                .ok()?;
+            last_send = Instant::now();
+        }
+    }
+    tx.send(Msg::Commits(generation, batch)).ok()?;
+    Some(Ok(()))
+}
+
+enum LogEvent {
+    Chunk(usize, Result<Vec<Commit>>),
+    /// The producer handed out this many chunks in total.
+    Total(usize),
+}
+
+/// Loads the branch on every core: a producer cuts `git rev-list` into chunks as it
+/// streams, one thread per core runs `git log` on a chunk at a time, and this
+/// thread forwards the results in log order. `None` if the load went stale.
+fn load_parallel(
+    root: &Path,
+    tx: &Sender<Msg>,
+    generation: u64,
+    live: impl Fn() -> bool + Clone + Send + 'static,
+    first_chunk: usize,
+    chunk_size: usize,
+) -> Option<Result<()>> {
+    let (job_tx, job_rx) = mpsc::channel::<(usize, Vec<String>)>();
+    let job_rx = Arc::new(Mutex::new(job_rx));
+    let (event_tx, event_rx) = mpsc::channel::<LogEvent>();
+
+    let threads = thread::available_parallelism().map_or(1, |n| n.get());
+    for _ in 0..threads {
+        let (root, job_rx, event_tx, live) = (
+            root.to_owned(),
+            job_rx.clone(),
+            event_tx.clone(),
+            live.clone(),
+        );
+        thread::spawn(move || {
+            loop {
+                let job = job_rx.lock().expect("job lock").recv();
+                let Ok((index, shas)) = job else { return };
+                if !live() {
+                    return;
+                }
+                let commits = git::log_commits(&root, &shas).and_then(|s| s.collect());
+                if event_tx.send(LogEvent::Chunk(index, commits)).is_err() {
+                    return;
+                }
+            }
+        });
+    }
+
+    let producer_root = root.to_owned();
+    thread::spawn(move || {
+        let revs = match git::rev_list(&producer_root) {
+            Ok(revs) => revs,
+            Err(e) => {
+                let _ = event_tx.send(LogEvent::Chunk(0, Err(e)));
+                return;
+            }
+        };
+        let (mut chunk, mut count) = (Vec::with_capacity(first_chunk), 0);
+        for sha in revs {
+            match sha {
+                Ok(sha) => chunk.push(sha),
+                Err(e) => {
+                    let _ = event_tx.send(LogEvent::Chunk(count, Err(e)));
+                    return;
+                }
+            }
+            let size = if count == 0 { first_chunk } else { chunk_size };
+            if chunk.len() == size {
+                // Fails only once the load is abandoned; dropping `revs` kills git.
+                if job_tx.send((count, mem::take(&mut chunk))).is_err() {
+                    return;
+                }
+                count += 1;
+            }
+        }
+        if !chunk.is_empty() && job_tx.send((count, chunk)).is_ok() {
+            count += 1;
+        }
+        let _ = event_tx.send(LogEvent::Total(count));
+    });
+
+    // Chunks finish out of order; hold each until the ones before it are sent.
+    let (mut next, mut total, mut waiting) = (0, None, HashMap::new());
+    while total != Some(next) {
+        let event = event_rx.recv().ok()?;
+        if !live() {
+            return None;
+        }
+        match event {
+            LogEvent::Total(n) => total = Some(n),
+            LogEvent::Chunk(_, Err(e)) => return Some(Err(e)),
+            LogEvent::Chunk(index, Ok(commits)) => {
+                waiting.insert(index, commits);
+                while let Some(commits) = waiting.remove(&next) {
+                    tx.send(Msg::Commits(generation, commits)).ok()?;
+                    next += 1;
+                }
+            }
+        }
+    }
+    Some(Ok(()))
 }
 
 /// Commits handed to one `git log -G`. Small enough that the first matches show up
@@ -212,4 +328,97 @@ pub fn spawn_diff(root: PathBuf, tx: Sender<Msg>) -> Sender<DiffRequest> {
         }
     });
     req_tx
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::Repo;
+
+    fn history() -> Repo {
+        let repo = Repo::new();
+        repo.write("a.txt", "one\ntwo\nthree\nfour\n");
+        repo.commit("root");
+        repo.git(&["checkout", "-q", "-b", "side"]);
+        repo.write("side.txt", "side\n");
+        repo.commit("side work");
+        repo.git(&["checkout", "-q", "main"]);
+        repo.git(&["mv", "a.txt", "b.txt"]);
+        repo.commit("rename");
+        repo.git(&["merge", "-q", "--no-edit", "side"]);
+        for n in 0..5 {
+            repo.write("n.txt", &format!("{n}\n"));
+            repo.commit(&format!("commit {n}"));
+        }
+        repo
+    }
+
+    /// Everything but the relative date, which can tick between two loads.
+    fn key(c: &Commit) -> (String, String, Vec<git::FileChange>) {
+        (c.sha.clone(), c.subject.clone(), c.files.clone())
+    }
+
+    #[test]
+    fn parallel_load_matches_git_log_in_order() {
+        let repo = history();
+        let expected: Vec<_> = repo.log().iter().map(key).collect();
+        assert_eq!(expected.len(), 9);
+
+        let (tx, rx) = mpsc::channel();
+        // Tiny chunks: many of them, finishing out of order.
+        let result = load_parallel(repo.path(), &tx, 7, || true, 1, 2);
+        assert!(matches!(result, Some(Ok(()))));
+        drop(tx);
+        let mut loaded = Vec::new();
+        for msg in rx {
+            let Msg::Commits(7, batch) = msg else {
+                panic!("unexpected message")
+            };
+            loaded.extend(batch.iter().map(key));
+        }
+        assert_eq!(loaded, expected);
+    }
+
+    #[test]
+    fn stale_load_stops_quietly() {
+        let repo = history();
+        let (tx, rx) = mpsc::channel();
+        assert!(load_parallel(repo.path(), &tx, 1, || false, 1, 2).is_none());
+        drop(tx);
+        assert_eq!(rx.iter().count(), 0);
+    }
+
+    /// `LEVI_BENCH_REPO=... cargo test --release log_load_speed -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn log_load_speed() {
+        let Ok(path) = std::env::var("LEVI_BENCH_REPO") else {
+            return;
+        };
+        let root = PathBuf::from(path);
+        let (tx, rx) = mpsc::channel();
+        let t = Instant::now();
+        LogLoader::new(root, tx).start(LogRequest {
+            source: Source::Log,
+            generation: 1,
+        });
+        let (mut first, mut count) = (None, 0);
+        for msg in rx {
+            match msg {
+                Msg::Commits(_, batch) => {
+                    first.get_or_insert((t.elapsed(), batch.len()));
+                    count += batch.len();
+                }
+                Msg::LogDone(_, r) => {
+                    r.unwrap();
+                    break;
+                }
+                _ => {}
+            }
+        }
+        println!(
+            "first batch {first:.2?}, all {count} commits in {:.2?}",
+            t.elapsed()
+        );
+    }
 }

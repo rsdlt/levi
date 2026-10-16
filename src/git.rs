@@ -159,24 +159,103 @@ fn parse_version(text: &str) -> Option<(u32, u32)> {
 /// Starts `git log` for the current branch (or walks HEAD's reflog) and returns a
 /// lazy stream of commits. Merges are diffed against their first parent.
 pub fn log(root: &Path, source: Source) -> Result<LogStream> {
-    let mut cmd = git(root);
-    cmd.arg("log");
+    let mut cmd = log_command(root);
     if source == Source::Reflog {
         cmd.arg("--walk-reflogs");
     }
-    let mut child = cmd
-        .args([
-            "--no-color",
-            "--no-show-signature",
-            "--diff-merges=first-parent",
-            "--name-status",
-            "-z",
-            LOG_FORMAT,
-        ])
+    stream(cmd, &[])
+}
+
+/// The same records as `log`, for exactly `shas`, in that order. Lets callers
+/// split history into chunks and load them in parallel.
+pub fn log_commits(root: &Path, shas: &[String]) -> Result<LogStream> {
+    let mut cmd = log_command(root);
+    cmd.args(["--no-walk=unsorted", "--stdin"]);
+    stream(cmd, shas)
+}
+
+/// Commit ids of the current branch in `git log` order, as git lists them.
+/// Kills git if dropped early.
+pub fn rev_list(root: &Path) -> Result<RevList> {
+    let mut child = git(root)
+        .args(["rev-list", "HEAD"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .context("failed to run git")?;
+    let stdout = child.stdout.take().expect("stdout is piped");
+    Ok(RevList {
+        lines: BufReader::new(stdout).lines(),
+        child,
+    })
+}
+
+pub struct RevList {
+    lines: std::io::Lines<BufReader<ChildStdout>>,
+    child: Child,
+}
+
+impl Iterator for RevList {
+    type Item = Result<String>;
+
+    fn next(&mut self) -> Option<Result<String>> {
+        match self.lines.next() {
+            Some(line) => Some(line.map_err(Into::into)),
+            // EOF: surface a non-zero exit as a final error.
+            None => match self.child.wait() {
+                Ok(status) if status.success() => None,
+                Ok(_) => {
+                    let mut stderr = String::new();
+                    if let Some(mut pipe) = self.child.stderr.take() {
+                        let _ = pipe.read_to_string(&mut stderr);
+                    }
+                    Some(Err(anyhow!("git rev-list: {}", stderr.trim())))
+                }
+                Err(e) => Some(Err(e.into())),
+            },
+        }
+    }
+}
+
+impl Drop for RevList {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn log_command(root: &Path) -> Command {
+    let mut cmd = git(root);
+    cmd.args([
+        "log",
+        "--no-color",
+        "--no-show-signature",
+        "--diff-merges=first-parent",
+        "--name-status",
+        "-z",
+        LOG_FORMAT,
+    ]);
+    cmd
+}
+
+/// Spawns `cmd`, feeds it `input` one line each, and streams the records it prints.
+fn stream(mut cmd: Command, input: &[String]) -> Result<LogStream> {
+    let mut child = cmd
+        .stdin(if input.is_empty() {
+            Stdio::null()
+        } else {
+            Stdio::piped()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to run git")?;
+    if let Some(mut stdin) = child.stdin.take() {
+        // `--stdin` reads everything before printing anything, so this can't deadlock.
+        for line in input {
+            writeln!(stdin, "{line}")?;
+        }
+    }
     let stdout = child.stdout.take().expect("stdout is piped");
     Ok(LogStream {
         records: Records::new(BufReader::new(stdout)),
