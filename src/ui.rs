@@ -6,8 +6,8 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 
-use crate::app::{App, Diff, Focus};
-use crate::git::Status;
+use crate::app::{App, DiffView, Focus};
+use crate::git::{LineKind, Status};
 
 const ACCENT: Color = Color::Cyan;
 
@@ -50,10 +50,14 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
         Span::raw(&app.query),
         Span::styled("█", Style::new().fg(ACCENT)),
     ]);
-    let count = format!(" {} commits ", app.commits.len());
+    let status = match &app.log_error {
+        Some(err) => Line::styled(format!(" {err} "), Color::Red),
+        None if app.loading => Line::from(format!(" {} commits… ", app.commits.len())),
+        None => Line::from(format!(" {} commits ", app.commits.len())),
+    };
     let block = Block::bordered()
         .title(" levi ".bold())
-        .title_bottom(Line::from(count).right_aligned())
+        .title_bottom(status.right_aligned())
         .border_style(Style::new().dark_gray());
     frame.render_widget(Paragraph::new(line).block(block), area);
 }
@@ -119,58 +123,42 @@ fn draw_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = pane(&title, app.focus == Focus::Diff);
     app.diff_height = block.inner(area).height as usize;
 
-    let lines: Vec<Line> = match &app.diff {
-        Some(Diff { text: Ok(text), .. }) => colorize(text, app.diff_scroll, app.diff_height),
-        Some(Diff { text: Err(err), .. }) => vec![Line::styled(err.as_str(), Color::Red)],
-        None if app.commit().is_some() => vec![Line::styled("no file changes", Style::new().dim())],
-        None => vec![],
+    let lines: Vec<Line> = match app.diff() {
+        DiffView::Ready(lines) => lines
+            .iter()
+            .skip(app.diff_scroll)
+            .take(app.diff_height)
+            .map(|l| Line::styled(l.text.as_str(), line_style(l.kind)))
+            .collect(),
+        DiffView::Failed(err) => vec![Line::styled(err, Color::Red)],
+        DiffView::Loading => vec![Line::styled("loading…", Style::new().dim())],
+        DiffView::Empty if app.commit().is_some() => {
+            vec![Line::styled("no file changes", Style::new().dim())]
+        }
+        DiffView::Empty => vec![],
     };
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-/// Styles the visible window of a unified diff.
-fn colorize(text: &str, skip: usize, take: usize) -> Vec<Line<'static>> {
-    // Lines before the first hunk are headers; whether a line is header or
-    // content depends on what came before, so scan from the top.
-    let mut in_hunk = false;
-    let mut out = Vec::with_capacity(take);
-    for (i, raw) in text.lines().enumerate() {
-        if raw.starts_with("diff --git") {
-            in_hunk = false;
-        } else if raw.starts_with("@@") {
-            in_hunk = true;
-        }
-        if i < skip {
-            continue;
-        }
-        if out.len() == take {
-            break;
-        }
-        let style = if raw.starts_with("@@") {
-            Style::new().fg(ACCENT)
-        } else if !in_hunk {
-            Style::new().dim().bold()
-        } else if raw.starts_with('+') {
-            Style::new().fg(Color::Green)
-        } else if raw.starts_with('-') {
-            Style::new().fg(Color::Red)
-        } else {
-            Style::new()
-        };
-        let line = raw.replace('\t', "    ").replace('\r', "");
-        out.push(Line::styled(line, style));
+fn line_style(kind: LineKind) -> Style {
+    match kind {
+        LineKind::Header => Style::new().dim().bold(),
+        LineKind::Hunk => Style::new().fg(ACCENT),
+        LineKind::Added => Style::new().fg(Color::Green),
+        LineKind::Removed => Style::new().fg(Color::Red),
+        LineKind::Context => Style::new(),
     }
-    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::Exit;
+    use crate::app::{Exit, Msg};
+    use crate::git;
     use crate::testutil::Repo;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
     fn render(app: &mut App) -> String {
         let mut terminal = Terminal::new(TestBackend::new(100, 14)).unwrap();
@@ -183,7 +171,18 @@ mod tests {
     }
 
     fn press(app: &mut App, code: KeyCode) {
-        app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+        let key = KeyEvent::new(code, KeyModifiers::NONE);
+        app.update(Msg::Input(Event::Key(key)));
+    }
+
+    /// Plays the diff worker's part synchronously.
+    fn serve_diffs(app: &mut App, repo: &Repo) {
+        while let Some(req) = app.take_diff_request() {
+            let result = git::diff(repo.path(), &req.sha, &req.file)
+                .map(|text| git::parse_diff(&text))
+                .map_err(|e| e.to_string());
+            app.update(Msg::Diff(req.key(), result));
+        }
     }
 
     #[test]
@@ -195,9 +194,17 @@ mod tests {
         repo.write("wall.md", "maria\n");
         repo.commit("second");
 
-        let mut app = App::new(repo.path().to_owned(), repo.log());
+        let mut app = App::new();
+        app.update(Msg::Commits(repo.log()));
+        let screen = render(&mut app);
+        assert!(screen.contains("2 commits…"));
+        assert!(screen.contains("loading…"));
+
+        app.update(Msg::LogDone(Ok(())));
+        serve_diffs(&mut app, &repo);
         let screen = render(&mut app);
         println!("{screen}");
+        assert!(screen.contains("2 commits "));
         assert!(screen.contains("second"));
         assert!(screen.contains("first"));
         assert!(screen.contains("M tatakae.rs"));
@@ -207,15 +214,21 @@ mod tests {
         // Files pane: move to wall.md, diff follows.
         press(&mut app, KeyCode::Tab);
         press(&mut app, KeyCode::Down);
+        serve_diffs(&mut app, &repo);
         let screen = render(&mut app);
         println!("{screen}");
         assert!(screen.contains("+maria"));
 
+        // Back to tatakae.rs: served from cache, no new request.
+        press(&mut app, KeyCode::Up);
+        assert!(app.take_diff_request().is_none());
+        assert!(render(&mut app).contains("+fn main() { attack(); }"));
+
         // Back to commits, go to the older one: file selection resets.
         press(&mut app, KeyCode::BackTab);
         press(&mut app, KeyCode::Down);
-        let screen = render(&mut app);
-        assert!(screen.contains("+fn main() {}"));
+        serve_diffs(&mut app, &repo);
+        assert!(render(&mut app).contains("+fn main() {}"));
         assert_eq!(app.file_idx, 0);
 
         // Typing goes to the query; Esc clears it, then quits.
@@ -230,13 +243,9 @@ mod tests {
     }
 
     #[test]
-    fn colorize_scrolls_and_tracks_hunks() {
-        let text = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n";
-        let lines = colorize(text, 4, 10);
-        assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0].style.fg, Some(Color::Red));
-        assert_eq!(lines[1].style.fg, Some(Color::Green));
-        // `---`/`+++` are headers, not removals/additions.
-        assert_eq!(colorize(text, 1, 1)[0].style.fg, None);
+    fn log_error_shows_in_status() {
+        let mut app = App::new();
+        app.update(Msg::LogDone(Err("git log: boom".into())));
+        assert!(render(&mut app).contains("git log: boom"));
     }
 }

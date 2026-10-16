@@ -256,6 +256,49 @@ pub fn diff(root: &Path, sha: &str, file: &FileChange) -> Result<String> {
     Ok(String::from_utf8_lossy(&run(&mut cmd)?).into_owned())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineKind {
+    /// `diff --git`, `index`, `---`/`+++`, mode and rename lines.
+    Header,
+    Hunk,
+    Added,
+    Removed,
+    Context,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffLine {
+    pub kind: LineKind,
+    pub text: String,
+}
+
+/// Classifies each line of a unified diff, expanding tabs for display.
+pub fn parse_diff(text: &str) -> Vec<DiffLine> {
+    // `---`/`+++` are headers only before the first hunk, so track position.
+    let mut in_hunk = false;
+    text.lines()
+        .map(|raw| {
+            let kind = if raw.starts_with("diff --git") {
+                in_hunk = false;
+                LineKind::Header
+            } else if raw.starts_with("@@") {
+                in_hunk = true;
+                LineKind::Hunk
+            } else if !in_hunk {
+                LineKind::Header
+            } else if raw.starts_with('+') {
+                LineKind::Added
+            } else if raw.starts_with('-') {
+                LineKind::Removed
+            } else {
+                LineKind::Context
+            };
+            let text = raw.replace('\t', "    ").replace('\r', "");
+            DiffLine { kind, text }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -424,5 +467,14 @@ mod tests {
         );
         assert_eq!(commits[1].author, "Erwin");
         assert!(commits[1].files.is_empty());
+    }
+
+    #[test]
+    fn parse_diff_tracks_hunks() {
+        let text = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n ctx\tx\r\n";
+        let kinds: Vec<_> = parse_diff(text).iter().map(|l| l.kind).collect();
+        use LineKind::*;
+        assert_eq!(kinds, [Header, Header, Header, Hunk, Removed, Added, Context]);
+        assert_eq!(parse_diff(text)[6].text, " ctx    x");
     }
 }

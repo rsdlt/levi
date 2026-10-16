@@ -1,16 +1,18 @@
 mod app;
 mod git;
 mod ui;
+mod worker;
 
 #[cfg(test)]
 mod testutil;
 
 use std::io::{self, Stderr};
+use std::path::PathBuf;
+use std::sync::mpsc;
 
 use anyhow::Result;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -22,11 +24,10 @@ type Tui = Terminal<CrosstermBackend<Stderr>>;
 
 fn main() -> Result<()> {
     let root = git::repo_root(&std::env::current_dir()?)?;
-    let commits = git::log(&root)?.collect::<Result<Vec<_>>>()?;
-    let mut app = App::new(root, commits);
+    let mut app = App::new();
 
     let mut terminal = init()?;
-    let result = run(&mut terminal, &mut app);
+    let result = run(&mut terminal, &mut app, root);
     restore();
 
     result?;
@@ -36,13 +37,21 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn run(terminal: &mut Tui, app: &mut App) -> Result<()> {
+fn run(terminal: &mut Tui, app: &mut App, root: PathBuf) -> Result<()> {
+    let (tx, rx) = mpsc::channel();
+    worker::spawn_input(tx.clone());
+    worker::spawn_log(root.clone(), tx.clone());
+    let diffs = worker::spawn_diff(root, tx);
+
     while app.exit.is_none() {
+        if let Some(req) = app.take_diff_request() {
+            diffs.send(req)?;
+        }
         terminal.draw(|frame| ui::draw(frame, app))?;
-        if let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            app.handle_key(key);
+        app.update(rx.recv()?);
+        // Apply everything that queued up during the draw before drawing again.
+        while let Ok(msg) = rx.try_recv() {
+            app.update(msg);
         }
     }
     Ok(())

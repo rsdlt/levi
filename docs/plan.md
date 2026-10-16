@@ -73,11 +73,19 @@ All commands run as `git --literal-pathspecs` (so paths like `glob*.txt` aren't 
 ```
 src/
   main.rs    – repo check, terminal setup/restore, panic hook, event loop
-  git.rs     – log stream parser, diff fetch, types (Commit, FileChange)
+  git.rs     – log stream parser, diff fetch + line classification, types
+  worker.rs  – input / log / diff threads, all reporting through one Msg channel
   filter.rs  – nucleo matching over commits + files, producing filtered views
-  app.rs     – state: query, filtered views, selections, focus, scroll, diff cache
+  app.rs     – state: query, filtered views, selections, focus, scroll, diff LRU
   ui.rs      – layout and rendering of the 4 widgets
+  testutil.rs – throwaway git repos for tests
 ```
+
+`App` is thread-free: it consumes `Msg`s and exposes `take_diff_request()`; `main` forwards
+requests to the diff worker. Tests play the worker's role synchronously.
+
+Measured on git.git (82.5k commits, release build): first commits + diff on screen in <0.1s,
+full log streamed in ~5s (bounded by `git log` itself), ~75 MB RSS, 1.2 MB binary.
 
 ## Build order
 
