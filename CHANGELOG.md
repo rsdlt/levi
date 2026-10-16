@@ -7,6 +7,8 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-16
+
 ### Added
 
 - Mouse support: click a commit or file to select it, and use the wheel to move through a
@@ -77,7 +79,8 @@ First release.
 - `--help` and `--version`.
 - `cargo deny` configuration for license, advisory and source checks.
 
-[Unreleased]: https://github.com/rsdlt/levi/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/rsdlt/levi/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/rsdlt/levi/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/rsdlt/levi/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/rsdlt/levi/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/rsdlt/levi/compare/v0.2.0...v0.3.0
