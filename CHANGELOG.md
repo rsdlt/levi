@@ -7,6 +7,8 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-16
+
 ### Added
 
 - Lines wider than the diff pane scroll sideways with `Shift-←`/`Shift-→`, horizontal mouse
@@ -85,7 +87,8 @@ First release.
 - `--help` and `--version`.
 - `cargo deny` configuration for license, advisory and source checks.
 
-[Unreleased]: https://github.com/rsdlt/levi/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/rsdlt/levi/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/rsdlt/levi/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/rsdlt/levi/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/rsdlt/levi/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/rsdlt/levi/compare/v0.3.0...v0.4.0
