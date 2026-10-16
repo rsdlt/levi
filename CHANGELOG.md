@@ -7,6 +7,12 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+### Added
+
+- An optional revision argument: `levi main..HEAD` shows only what your branch adds, `levi v1.0..`
+  everything since a tag, `levi other-branch` another branch. The status line names it, and a bad
+  revision or an empty range fails before the TUI opens. `/r` still shows the whole reflog.
+
 ## [0.8.0] - 2026-10-16
 
 ### Added

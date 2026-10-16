@@ -31,7 +31,12 @@ type Tui = Terminal<CrosstermBackend<Stderr>>;
 const HELP: &str = "\
 levi — commits, their files and diffs, with fuzzy search. Small, swift, precise.
 
-Usage: levi    (run inside a git repository)
+Usage: levi [revision]    (run inside a git repository)
+
+Shows the current branch, or the commits of any revision git understands:
+  levi main..HEAD     what your branch adds to main
+  levi v1.0..         everything since a tag
+  levi other-branch   another branch, without checking it out
 
 Type to filter commits by subject, author, sha prefix or touched files.
 fzf syntax: 'exact  ^prefix  suffix$  !negate  (space-separated terms all match)
@@ -56,22 +61,25 @@ Exits 130 when quit without picking a commit, like fzf.
 ";
 
 fn main() -> ExitCode {
-    match std::env::args().nth(1).as_deref() {
-        None => {}
-        Some("-h" | "--help") => {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let rev = match args.as_slice() {
+        [] => None,
+        [flag] if flag == "-h" || flag == "--help" => {
             print!("{HELP}");
             return ExitCode::SUCCESS;
         }
-        Some("-V" | "--version") => {
+        [flag] if flag == "-V" || flag == "--version" => {
             println!("levi {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;
         }
-        Some(arg) => {
+        // Anything else starting with `-` would be a git option, not a revision.
+        [rev] if !rev.starts_with('-') => Some(rev.clone()),
+        [arg] | [_, arg, ..] => {
             eprintln!("levi: unexpected argument '{arg}' (see --help)");
             return ExitCode::from(2);
         }
-    }
-    match try_main() {
+    };
+    match try_main(rev) {
         Ok(Exit::Pick(sha)) => {
             println!("{sha}");
             ExitCode::SUCCESS
@@ -84,9 +92,10 @@ fn main() -> ExitCode {
     }
 }
 
-fn try_main() -> Result<Exit> {
-    let root = git::preflight(&std::env::current_dir()?)?;
+fn try_main(rev: Option<String>) -> Result<Exit> {
+    let root = git::preflight(&std::env::current_dir()?, rev.as_deref())?;
     let mut app = App::new();
+    app.rev = rev;
 
     let mut terminal = init()?;
     let result = run(&mut terminal, &mut app, root);
@@ -99,7 +108,8 @@ fn try_main() -> Result<Exit> {
 fn run(terminal: &mut Tui, app: &mut App, root: PathBuf) -> Result<()> {
     let (tx, rx) = mpsc::channel();
     worker::spawn_input(tx.clone());
-    let logs = worker::LogLoader::new(root.clone(), tx.clone());
+    let rev = app.rev.clone().unwrap_or_else(|| "HEAD".into());
+    let logs = worker::LogLoader::new(root.clone(), rev, tx.clone());
     let code = worker::CodeSearcher::new(root.clone(), tx.clone());
     let diffs = worker::spawn_diff(root, tx);
 

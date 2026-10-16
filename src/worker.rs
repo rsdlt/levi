@@ -42,15 +42,18 @@ pub fn spawn_input(tx: Sender<Msg>) {
 /// Loads the commit list in the background, one source at a time.
 pub struct LogLoader {
     root: PathBuf,
+    /// What the log shows: `HEAD`, or the revision levi was started with.
+    rev: String,
     tx: Sender<Msg>,
     /// Generation of the newest load. Older loads see they're stale and stop.
     current: Arc<AtomicU64>,
 }
 
 impl LogLoader {
-    pub fn new(root: PathBuf, tx: Sender<Msg>) -> LogLoader {
+    pub fn new(root: PathBuf, rev: String, tx: Sender<Msg>) -> LogLoader {
         LogLoader {
             root,
+            rev,
             tx,
             current: Arc::new(AtomicU64::new(0)),
         }
@@ -62,11 +65,15 @@ impl LogLoader {
         let LogRequest { source, generation } = req;
         self.current.store(generation, Ordering::SeqCst);
         let (root, tx, current) = (self.root.clone(), self.tx.clone(), self.current.clone());
+        let rev = self.rev.clone();
         let live = move || current.load(Ordering::SeqCst) == generation;
         thread::spawn(move || {
             let result = match source {
-                Source::Log => load_parallel(&root, &tx, generation, live, FIRST_CHUNK, LOG_CHUNK),
+                Source::Log => {
+                    load_parallel(&root, &rev, &tx, generation, live, FIRST_CHUNK, LOG_CHUNK)
+                }
                 // The reflog is short, and only a reflog walk knows each entry's action.
+                // It's every place HEAD has been, so a revision doesn't narrow it.
                 Source::Reflog => load_serial(&root, &tx, generation, live),
             };
             if let Some(result) = result {
@@ -122,11 +129,12 @@ enum LogEvent {
     Total(usize),
 }
 
-/// Loads the branch on every core: a producer cuts `git rev-list` into chunks as it
+/// Loads `rev` on every core: a producer cuts `git rev-list` into chunks as it
 /// streams, one thread per core runs `git log` on a chunk at a time, and this
 /// thread forwards the results in log order. `None` if the load went stale.
 fn load_parallel(
     root: &Path,
+    rev: &str,
     tx: &Sender<Msg>,
     generation: u64,
     live: impl Fn() -> bool + Clone + Send + 'static,
@@ -160,9 +168,9 @@ fn load_parallel(
         });
     }
 
-    let producer_root = root.to_owned();
+    let (producer_root, rev) = (root.to_owned(), rev.to_owned());
     thread::spawn(move || {
-        let revs = match git::rev_list(&producer_root) {
+        let revs = match git::rev_list(&producer_root, &rev) {
             Ok(revs) => revs,
             Err(e) => {
                 let _ = event_tx.send(LogEvent::Chunk(0, Err(e)));
@@ -420,6 +428,24 @@ mod tests {
     }
 
     #[test]
+    fn parallel_load_takes_a_revision() {
+        let repo = history();
+        let expected: Vec<_> = repo.log().iter().take(3).map(key).collect();
+        let (tx, rx) = mpsc::channel();
+        let result = load_parallel(repo.path(), "HEAD~3..HEAD", &tx, 1, || true, 1, 2);
+        assert!(matches!(result, Some(Ok(()))));
+        drop(tx);
+        let loaded: Vec<_> = rx
+            .into_iter()
+            .flat_map(|msg| match msg {
+                Msg::Commits(_, batch) => batch,
+                _ => panic!("unexpected message"),
+            })
+            .collect();
+        assert_eq!(loaded.iter().map(key).collect::<Vec<_>>(), expected);
+    }
+
+    #[test]
     fn parallel_load_matches_git_log_in_order() {
         let repo = history();
         let expected: Vec<_> = repo.log().iter().map(key).collect();
@@ -427,7 +453,7 @@ mod tests {
 
         let (tx, rx) = mpsc::channel();
         // Tiny chunks: many of them, finishing out of order.
-        let result = load_parallel(repo.path(), &tx, 7, || true, 1, 2);
+        let result = load_parallel(repo.path(), "HEAD", &tx, 7, || true, 1, 2);
         assert!(matches!(result, Some(Ok(()))));
         drop(tx);
         let mut loaded = Vec::new();
@@ -509,7 +535,7 @@ mod tests {
     fn stale_load_stops_quietly() {
         let repo = history();
         let (tx, rx) = mpsc::channel();
-        assert!(load_parallel(repo.path(), &tx, 1, || false, 1, 2).is_none());
+        assert!(load_parallel(repo.path(), "HEAD", &tx, 1, || false, 1, 2).is_none());
         drop(tx);
         assert_eq!(rx.iter().count(), 0);
     }
@@ -524,7 +550,7 @@ mod tests {
         let root = PathBuf::from(path);
         let (tx, rx) = mpsc::channel();
         let t = Instant::now();
-        LogLoader::new(root, tx).start(LogRequest {
+        LogLoader::new(root, "HEAD".into(), tx).start(LogRequest {
             source: Source::Log,
             generation: 1,
         });

@@ -25,7 +25,7 @@ cut mid-hint. One row, always on: no toggle key, since every printable key belon
 | # | Topic | Decision |
 |---|---|---|
 | 1 | Column a source | **Commit log** (`git log`) by default; `/r` switches to the reflog (see Commands). |
-| 2 | Scope | **Current branch only** (`HEAD`), no `--all`. |
+| 2 | Scope | **Current branch** (`HEAD`) by default, or one revision given as the only argument (`levi main..HEAD`). No `--all`. |
 | 3 | Merge commits | **Diff against first parent** (`--diff-merges=first-parent` for files and diff). History is *not* first-parent-only: commits from merged branches still show. |
 | 4 | Uncommitted changes | **Out for now.** No working-tree pseudo-commit. |
 | 5 | Git backend | Shell out to the `git` CLI (no `git2`/`gix`): respects user config, no C build, small binary. |
@@ -153,9 +153,16 @@ All five steps are done.
 
 ## CLI behaviour
 
-- `levi` takes no arguments; `-h/--help` and `-V/--version` only. Anything else exits 2.
+- `levi [revision]`: one optional revision (`main..HEAD`, `v1.0..`, a branch), handed to
+  `git rev-list --end-of-options <rev> --`, which feeds the parallel loader in place of `HEAD`.
+  `--` keeps git from reading it as a path, so `levi src/` is a bad revision rather than a path
+  filter (typing `src/` already filters by path). `-h/--help` and `-V/--version` aside,
+  arguments starting with `-` and any second argument exit 2.
+- `/r` ignores the revision: the reflog is every place HEAD has been, not a commit range. The
+  status line names the revision (`12 commits in main..HEAD`) only outside the reflog.
 - Before the TUI starts, a preflight check fails with a one-line `levi: …` on stderr (exit 1):
-  `git not found in PATH`, `needs git 2.31 or newer`, `not inside a git repository`, `no commits yet`.
+  `git not found in PATH`, `needs git 2.31 or newer`, `not inside a git repository`, `no commits yet`,
+  and with a revision `bad revision '<rev>'` or `no commits in '<rev>'` (an empty range).
 - Bare repositories work (commands run from the bare dir instead of a work tree's top level).
 - Exit codes: 0 with a picked sha on stdout, 130 when quit without picking (like fzf), so
   `sha=$(levi) && git show "$sha"` stops cleanly.

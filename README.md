@@ -38,6 +38,17 @@ Or from a clone: `cargo install --path .`
 Run `levi` anywhere inside a git repository (bare repositories work too). If you're not in one,
 he'll tell you in one line and leave. He doesn't do small talk.
 
+He patrols the current branch. Name a revision and he covers only that ground:
+
+```sh
+levi main..HEAD      # what your branch adds to main, before you open the PR
+levi v1.0..          # everything since a tag, for the changelog
+levi other-branch    # another branch, without checking it out
+```
+
+Anything `git log` understands as a revision works. Search, `/c` and `Enter` act on just those
+commits, so `/c` is faster too. `/r` still shows the whole reflog.
+
 | Key | Action |
 |---|---|
 | typing | search (the search bar always has focus) |
@@ -109,7 +120,7 @@ and the old search is dropped on the spot.
   1.6 MB binary. Short, and still the strongest.
 - **Relentless.** `/c` hunts through every diff in history on every core at once, and stops
   the moment you change your mind.
-- **Precise.** It shows the current branch, newest first. Merge commits are diffed against their
+- **Precise.** It shows the current branch, or the revision you name, newest first. Merge commits are diffed against their
   first parent. A sha search matches only real prefixes, so `add` doesn't fuzzy-match half
   your hashes. Each diff opens with the commit's full message, laid out like `git show`, and in
   an edited line only the words that changed are lit, like git's `diff-highlight`. No squinting

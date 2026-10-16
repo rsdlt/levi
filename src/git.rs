@@ -113,10 +113,11 @@ fn output(cmd: &mut Command) -> Result<Output> {
 /// `--diff-merges` landed in git 2.31.
 const MIN_GIT: (u32, u32) = (2, 31);
 
-/// Fails with a readable message unless levi can run in `dir`. Returns the
-/// directory git commands should run from: the work tree's top level (log and
-/// diff paths are relative to it), or `dir` itself in a bare repository.
-pub fn preflight(dir: &Path) -> Result<PathBuf> {
+/// Fails with a readable message unless levi can run in `dir`, on `rev` if one
+/// was given. Returns the directory git commands should run from: the work
+/// tree's top level (log and diff paths are relative to it), or `dir` itself in
+/// a bare repository.
+pub fn preflight(dir: &Path, rev: Option<&str>) -> Result<PathBuf> {
     let version = run(git(dir).arg("version"))?;
     let version = String::from_utf8_lossy(&version);
     if parse_version(&version).is_some_and(|v| v < MIN_GIT) {
@@ -138,9 +139,21 @@ pub fn preflight(dir: &Path) -> Result<PathBuf> {
         repo_root(dir)?
     };
 
-    let head = output(git(&root).args(["rev-parse", "--verify", "--quiet", "HEAD"]))?;
-    if !head.status.success() {
-        bail!("no commits yet");
+    let Some(rev) = rev else {
+        let head = output(git(&root).args(["rev-parse", "--verify", "--quiet", "HEAD"]))?;
+        if !head.status.success() {
+            bail!("no commits yet");
+        }
+        return Ok(root);
+    };
+    // `--` makes git read `rev` as a revision only, never as a path.
+    let first =
+        output(git(&root).args(["rev-list", "--max-count=1", "--end-of-options", rev, "--"]))?;
+    if !first.status.success() {
+        bail!("bad revision '{rev}'");
+    }
+    if first.stdout.is_empty() {
+        bail!("no commits in '{rev}'");
     }
     Ok(root)
 }
@@ -176,11 +189,11 @@ pub fn log_commits(root: &Path, shas: &[String]) -> Result<LogStream> {
     stream(cmd, shas)
 }
 
-/// Commit ids of the current branch in `git log` order, as git lists them.
-/// Kills git if dropped early.
-pub fn rev_list(root: &Path) -> Result<RevList> {
+/// Commit ids of `rev` (a branch, a range like `main..HEAD`, …) in `git log`
+/// order, as git lists them. Kills git if dropped early.
+pub fn rev_list(root: &Path, rev: &str) -> Result<RevList> {
     let mut child = git(root)
-        .args(["rev-list", "HEAD"])
+        .args(["rev-list", "--end-of-options", rev, "--"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -770,27 +783,64 @@ mod tests {
     #[test]
     fn preflight_errors() {
         let dir = TempDir::new().unwrap();
-        let err = preflight(dir.path()).unwrap_err().to_string();
+        let err = preflight(dir.path(), None).unwrap_err().to_string();
         assert_eq!(err, "not inside a git repository");
 
         let repo = Repo::new();
-        let err = preflight(repo.path()).unwrap_err().to_string();
+        let err = preflight(repo.path(), None).unwrap_err().to_string();
         assert_eq!(err, "no commits yet");
 
         repo.write("a", "a\n");
         repo.commit("a");
-        let root = preflight(&repo.path().join(".git"))
+        let root = preflight(&repo.path().join(".git"), None)
             .unwrap_err()
             .to_string();
         assert!(
             root.contains("work tree"),
             "inside .git is neither bare nor a work tree: {root}"
         );
-        let root = preflight(repo.path()).unwrap();
+        let root = preflight(repo.path(), None).unwrap();
         assert_eq!(
             root.canonicalize().unwrap(),
             repo.path().canonicalize().unwrap()
         );
+    }
+
+    #[test]
+    fn preflight_checks_the_revision() {
+        let repo = Repo::new();
+        repo.write("a.txt", "a\n");
+        repo.commit("one");
+        repo.git(&["branch", "base"]);
+        repo.write("a.txt", "b\n");
+        repo.commit("two");
+
+        assert!(preflight(repo.path(), Some("base..HEAD")).is_ok());
+        assert!(preflight(repo.path(), Some("base")).is_ok());
+        let err = |rev| preflight(repo.path(), Some(rev)).unwrap_err().to_string();
+        assert_eq!(err("bsae..HEAD"), "bad revision 'bsae..HEAD'");
+        assert_eq!(err("HEAD..base"), "no commits in 'HEAD..base'");
+        // A file name is not a revision, even though git log would take it as a path.
+        assert_eq!(err("a.txt"), "bad revision 'a.txt'");
+    }
+
+    #[test]
+    fn rev_list_follows_the_revision() {
+        let repo = Repo::new();
+        for n in ["one", "two", "three"] {
+            repo.write("f", n);
+            repo.commit(n);
+        }
+        let shas = |rev| -> Vec<String> {
+            rev_list(repo.path(), rev)
+                .unwrap()
+                .collect::<Result<_>>()
+                .unwrap()
+        };
+        let all = shas("HEAD");
+        assert_eq!(all.len(), 3);
+        assert_eq!(shas("HEAD~2.."), all[..2]);
+        assert_eq!(shas("HEAD~1"), all[1..]);
     }
 
     #[test]
@@ -802,7 +852,7 @@ mod tests {
         let bare_path = bare.path().join("r.git");
         repo.git(&["clone", "-q", "--bare", ".", bare_path.to_str().unwrap()]);
 
-        let root = preflight(&bare_path).unwrap();
+        let root = preflight(&bare_path, None).unwrap();
         let commits: Vec<_> = log(&root, Source::Log)
             .unwrap()
             .collect::<Result<_>>()

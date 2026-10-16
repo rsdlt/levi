@@ -173,6 +173,9 @@ pub struct App {
     pub query: String,
     /// Where the commits column comes from, as of the last `settle`.
     pub source: Source,
+    /// The revision levi was started with, if not the current branch. The
+    /// reflog ignores it.
+    pub rev: Option<String>,
     /// The running or finished `/c` search, if the query has one.
     pub code: Option<CodeSearch>,
     pub focus: Focus,
@@ -220,6 +223,7 @@ impl App {
             log_error: None,
             query: String::new(),
             source: Source::Log,
+            rev: None,
             code: None,
             focus: Focus::Commits,
             commit_idx: 0,

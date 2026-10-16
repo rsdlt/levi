@@ -102,9 +102,10 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         format!("{}/{}", app.view.len(), app.commits.len())
     };
-    let noun = match app.source {
-        Source::Log => "commits",
-        Source::Reflog => "reflog entries",
+    let noun = match (app.source, &app.rev) {
+        (Source::Log, Some(rev)) => &format!("commits in {rev}"),
+        (Source::Log, None) => "commits",
+        (Source::Reflog, _) => "reflog entries",
     };
     let mut status = match &app.log_error {
         Some(err) => Line::styled(format!(" {err} "), Color::Red),
@@ -717,6 +718,20 @@ mod tests {
         let buf = terminal.backend().buffer();
         let bottom: String = (0..40).map(|x| buf[(x, 9)].symbol()).collect();
         assert_eq!(bottom.trim_end(), " ↑↓ move  enter pick  /c search code");
+    }
+
+    #[test]
+    fn status_names_the_revision() {
+        let repo = titans();
+        let mut app = App::new();
+        app.rev = Some("HEAD~2..".into());
+        app.update(Msg::Commits(0, repo.log()[..2].to_vec()));
+        app.update(Msg::LogDone(0, Ok(())));
+        assert!(render(&mut app).contains(" 2 commits in HEAD~2.. "));
+
+        // The reflog isn't narrowed by it, so it isn't named there.
+        type_str(&mut app, "/r");
+        assert!(!render(&mut app).contains("HEAD~2.."));
     }
 
     #[test]

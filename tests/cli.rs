@@ -78,3 +78,43 @@ fn unknown_argument() {
     assert_eq!(out.status.code(), Some(2));
     assert!(stderr(&out).contains("unexpected argument '--all'"));
 }
+
+fn repo_with_two_commits() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    let git = |args: &[&str]| {
+        let ok = Command::new("git")
+            .current_dir(dir.path())
+            .args(["-c", "user.name=Levi", "-c", "user.email=levi@scouts"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?}");
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "one"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "two"]);
+    dir
+}
+
+#[test]
+fn bad_revision() {
+    let dir = repo_with_two_commits();
+    let out = levi(dir.path(), &["mian..HEAD"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(stderr(&out), "levi: bad revision 'mian..HEAD'\n");
+
+    let out = levi(dir.path(), &["HEAD..HEAD~1"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(stderr(&out), "levi: no commits in 'HEAD..HEAD~1'\n");
+}
+
+#[test]
+fn one_revision_at_most() {
+    let dir = repo_with_two_commits();
+    let out = levi(dir.path(), &["main", "src/"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stderr(&out).contains("unexpected argument 'src/'"));
+}
