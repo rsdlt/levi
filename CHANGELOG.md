@@ -7,6 +7,11 @@ the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+### Added
+
+- GitHub Actions CI: tests on Linux and macOS, rustfmt, clippy, the minimum Rust version
+  (1.88), and `cargo deny`.
+
 ## [0.1.0] - 2026-10-15
 
 First release.
