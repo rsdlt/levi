@@ -6,6 +6,7 @@ description = "A git diff viewer: commits, their files and diffs, with fzf-style
 license = "MIT"
 rust-version = "1.88"
 readme = "README.md"
+repository = "https://github.com/rsdlt/levi"
 
 [dependencies]
 anyhow = "1.0.104"

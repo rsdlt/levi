@@ -25,8 +25,10 @@ Named in honor of humanity's strongest soldier: **small, swift and precise.**
 Needs Rust 1.88+ and git 2.31+.
 
 ```sh
-cargo install --path .
+cargo install --git https://github.com/rsdlt/levi
 ```
+
+Or from a clone: `cargo install --path .`
 
 ## Orders
 

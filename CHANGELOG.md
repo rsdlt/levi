@@ -5,9 +5,9 @@ All notable changes to levi are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Its public surface is the keys, the flags,
 the sha printed on stdout and the exit codes.
 
-## Unreleased
+## [Unreleased]
 
-## 0.1.0 - 2026-10-15
+## [0.1.0] - 2026-10-15
 
 First release.
 
@@ -26,3 +26,5 @@ First release.
 - `--help` and `--version`.
 - `cargo deny` configuration for license, advisory and source checks.
 
+[Unreleased]: https://github.com/rsdlt/levi/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/rsdlt/levi/releases/tag/v0.1.0
