@@ -208,9 +208,11 @@ fn load_parallel(
     Some(Ok(()))
 }
 
-/// Commits handed to one `git log -G`. Small enough that the first matches show up
-/// quickly and a cancelled search stops within a fraction of a second.
+/// At most this many commits per `git log -G`, so the first matches show up quickly.
 const CODE_CHUNK: usize = 500;
+/// Chunks per core when there are fewer commits, so every core gets work and the
+/// expensive commits (big merges) don't all land on one.
+const CODE_CHUNKS_PER_CORE: usize = 4;
 
 /// Searches diffs on every core: the commit list is cut into chunks, newest first,
 /// and one thread per core takes chunks off a shared queue.
@@ -251,7 +253,12 @@ impl CodeSearcher {
         } = req;
         self.cancel();
         self.current.store(generation, Ordering::SeqCst);
-        let chunks: VecDeque<Vec<String>> = shas.chunks(CODE_CHUNK).map(<[_]>::to_vec).collect();
+        let cores = thread::available_parallelism().map_or(1, |n| n.get());
+        let size = shas
+            .len()
+            .div_ceil(cores * CODE_CHUNKS_PER_CORE)
+            .clamp(1, CODE_CHUNK);
+        let chunks: VecDeque<Vec<String>> = shas.chunks(size).map(<[_]>::to_vec).collect();
         let total = chunks.len();
         let queue = Arc::new(Mutex::new(chunks));
         let finished = Arc::new(AtomicUsize::new(0));
@@ -260,9 +267,7 @@ impl CodeSearcher {
             let _ = self.tx.send(Msg::CodeDone(generation, Ok(())));
             return;
         }
-        let threads = thread::available_parallelism()
-            .map_or(1, |n| n.get())
-            .min(total);
+        let threads = cores.min(total);
         for _ in 0..threads {
             let (root, tx, current) = (self.root.clone(), self.tx.clone(), self.current.clone());
             let (queue, finished, pattern) = (queue.clone(), finished.clone(), pattern.clone());

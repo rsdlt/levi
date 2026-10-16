@@ -67,15 +67,7 @@ impl Filter {
     /// guaranteed to be a match of the old one, so callers may refilter only
     /// the previous hits.
     pub fn set_query(&mut self, query: &str) -> bool {
-        // Appending only narrows: longer atoms and extra atoms both match less.
-        // Negations (`!`), anchors (`$`) and escapes can widen or reinterpret
-        // the query, so start over whenever they're involved.
-        const SPECIAL: [char; 3] = ['!', '$', '\\'];
-        let narrows = !self.query.is_empty()
-            && query
-                .strip_prefix(self.query.as_str())
-                .is_some_and(|added| !added.contains(SPECIAL))
-            && !self.query.contains(SPECIAL);
+        let narrows = narrows(&self.query, query);
         self.query = query.to_owned();
         self.pattern
             .reparse(query, CaseMatching::Smart, Normalization::Smart);
@@ -151,6 +143,19 @@ impl Filter {
 
 fn score(pattern: &Pattern, matcher: &mut Matcher, buf: &mut Vec<char>, text: &str) -> Option<u32> {
     pattern.score(Utf32Str::new(text, buf), matcher)
+}
+
+/// Whether everything `new` matches is guaranteed to match `old` as well.
+pub fn narrows(old: &str, new: &str) -> bool {
+    // An empty query matches everything. Appending only narrows: longer atoms
+    // and extra atoms both match less. Negations (`!`), anchors (`$`) and
+    // escapes can widen or reinterpret a query, so they never count.
+    const SPECIAL: [char; 3] = ['!', '$', '\\'];
+    old.trim().is_empty()
+        || (!old.contains(SPECIAL)
+            && new
+                .strip_prefix(old)
+                .is_some_and(|added| !added.contains(SPECIAL)))
 }
 
 /// Matches `candidates` (indices into `commits`) against `query` across all
@@ -283,7 +288,7 @@ mod tests {
     #[test]
     fn narrowing() {
         let mut f = Filter::new();
-        assert!(!f.set_query("a"));
+        assert!(f.set_query("a"), "anything narrows the empty query");
         assert!(f.set_query("ab"));
         assert!(!f.set_query("a"), "deleting widens");
         assert!(!f.set_query("!a"));

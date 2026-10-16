@@ -142,13 +142,22 @@ and `/cache` stay fuzzy text; git paths never start with `/`.
     `CodeHits`, progress as chunks finish.
   - Starts 300 ms after typing pauses, and only once the log is fully loaded. A changed pattern
     or source bumps the code generation: running gits are killed at once and late results are
-    dropped. Changing only the fuzzy part reuses the results.
+    dropped.
+  - Scoped: it searches only the commits that pass the fuzzy part, and remembers that fuzzy
+    query. Changing the fuzzy part keeps the results if the new query only narrows it
+    (`filter::narrows`: an empty query, or appending without `!`, `$`, `\`); otherwise it
+    searches again after the pause. Chunks are sized to give every core ~4 of them (max 500
+    commits), since scoped sets are smaller and skew toward expensive merges.
   - A commit shows if it passes both filters; its files are the intersection (fuzzy file matches,
     or all files when the header matched, ∩ files whose diff matched).
   - The diff scrolls to the first added/removed line containing the text (3 lines of context)
     and highlights every occurrence.
-  - git.git (82.5k commits, 12 cores): ~9.3 s for a full search vs ~55 s single-process; first
-    hit for a common identifier in ~0.15 s. Cancelling kills all gits within 0.3 s.
+  - git.git (82.5k commits, 12 cores): ~8.5 s for a full search vs ~55 s single-process; first
+    hit for a common identifier in ~0.1 s; `parse /c …` (22.6k commits) ~3.2 s, `parse.c /c …`
+    (2.7k commits) ~1.5 s. Cancelling kills all gits within 0.3 s.
+  - Measured and rejected: `-S` (2.3× faster, misses edited lines: 34 of 48 hits), scanning
+    blobs ourselves via `cat-file --batch` (no faster, misses merges/moves), a bigger
+    `core.deltaBaseCacheLimit` (~4%), commit-graph (no change).
 
 Each load has a generation number: switching source starts a new one, the old loader stops at its
 next commit (killing its git), and late messages from old generations are dropped.

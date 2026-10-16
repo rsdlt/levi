@@ -671,13 +671,83 @@ mod tests {
         let files: Vec<_> = app.files().iter().map(|f| f.path.clone()).collect();
         assert_eq!(files, ["wall.md"], "both filters apply to files");
 
-        // Changing only the fuzzy part reuses the code results: no new search.
+        // README changed in `walls` and `docs`, but neither diff says `attack`.
         press(&mut app, KeyCode::Esc);
         type_str(&mut app, "README /c attack");
-        let later = std::time::Instant::now() + crate::app::CODE_DEBOUNCE * 2;
-        assert!(app.take_code_request(later).is_none());
-        // README changed in `walls` and `docs`, but neither diff says `attack`.
+        serve_code(&mut app, &repo);
         assert!(app.view.is_empty());
+    }
+
+    #[test]
+    fn slash_c_searches_only_what_the_fuzzy_part_matches() {
+        let repo = battlefield();
+        let mut app = loaded(&repo);
+        let later = || std::time::Instant::now() + crate::app::CODE_DEBOUNCE * 2;
+        let subjects = |app: &App, shas: &[String]| -> Vec<String> {
+            let mut s: Vec<_> = shas
+                .iter()
+                .map(|sha| {
+                    app.commits
+                        .iter()
+                        .find(|c| &c.sha == sha)
+                        .unwrap()
+                        .subject
+                        .clone()
+                })
+                .collect();
+            s.sort();
+            s
+        };
+
+        type_str(&mut app, "README /c attack");
+        let req = app.take_code_request(later()).unwrap();
+        assert_eq!(
+            subjects(&app, &req.shas),
+            ["docs", "walls"],
+            "only README commits"
+        );
+        app.take_code_cancel();
+
+        // Narrowing the fuzzy part keeps the results: no new search.
+        let hits = git::code_search(repo.path(), &req.pattern, &req.shas)
+            .unwrap()
+            .collect();
+        app.update(Msg::CodeHits(req.generation, hits));
+        app.update(Msg::CodeDone(req.generation, Ok(())));
+        app.query = "README.md /c attack".into();
+        assert!(app.take_code_request(later()).is_none());
+        assert!(!app.take_code_cancel());
+
+        // Widening it may need commits that weren't searched: search again.
+        app.query = "e /c attack".into();
+        let req = app.take_code_request(later()).unwrap();
+        assert_eq!(subjects(&app, &req.shas), ["docs", "expedition", "walls"]);
+
+        // With no fuzzy part, everything is searched, and any fuzzy text added
+        // later reuses that.
+        app.query = "/c attack".into();
+        let req = app.take_code_request(later()).unwrap();
+        assert_eq!(req.shas.len(), 3);
+        app.query = "wall /c attack".into();
+        assert!(app.take_code_request(later()).is_none());
+    }
+
+    #[test]
+    fn slash_c_waits_for_fuzzy_typing_to_pause() {
+        let repo = battlefield();
+        let mut app = loaded(&repo);
+        type_str(&mut app, "/c attack");
+        app.settle();
+        let first_due = app.deadline().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        // Typing the fuzzy part before the search started pushes it back.
+        app.query = "w /c attack".into();
+        app.settle();
+        assert!(app.deadline().unwrap() > first_due);
+        let req = app
+            .take_code_request(std::time::Instant::now() + crate::app::CODE_DEBOUNCE * 2)
+            .unwrap();
+        assert_eq!(req.shas.len(), 2, "scoped to commits matching `w`");
     }
 
     #[test]

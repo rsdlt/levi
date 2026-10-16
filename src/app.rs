@@ -51,7 +51,9 @@ pub struct CodeSearch {
     pub progress: (usize, usize),
     pub finished: bool,
     pub error: Option<String>,
-    requested: bool,
+    /// The fuzzy query whose matches were searched, once the search started.
+    /// Results stay valid for any query that only narrows it.
+    scope: Option<String>,
     typed_at: Instant,
 }
 
@@ -263,10 +265,25 @@ impl App {
         if switched {
             self.switch_source(parsed.source);
         }
-        let code_changed =
+        let mut code_changed =
             switched || parsed.code.as_deref() != self.code.as_ref().map(|c| c.pattern.as_str());
         if code_changed {
             self.restart_code(parsed.code);
+        } else if let Some(code) = &mut self.code
+            && parsed.fuzzy != self.filter.query()
+        {
+            match &code.scope {
+                // The search covered everything the new fuzzy query can match.
+                Some(scope) if filter::narrows(scope, &parsed.fuzzy) => {}
+                // It might miss some: search the new scope instead.
+                Some(_) => {
+                    let pattern = code.pattern.clone();
+                    self.restart_code(Some(pattern));
+                    code_changed = true;
+                }
+                // Not started yet: it'll use the new scope once typing pauses.
+                None => code.typed_at = Instant::now(),
+            }
         }
         if !code_changed && parsed.fuzzy == self.filter.query() {
             return;
@@ -321,7 +338,7 @@ impl App {
                 progress: (0, 0),
                 finished: false,
                 error: None,
-                requested: false,
+                scope: None,
                 typed_at: Instant::now(),
             }
         });
@@ -332,24 +349,34 @@ impl App {
         mem::take(&mut self.code_cancel)
     }
 
-    /// The code search to start: after typing paused for `CODE_DEBOUNCE`, over
-    /// every loaded commit once the log is complete.
+    /// The code search to start: after typing paused for `CODE_DEBOUNCE` and the
+    /// log is complete, over the loaded commits that pass the fuzzy filter.
     pub fn take_code_request(&mut self, now: Instant) -> Option<CodeRequest> {
         self.settle();
         if self.loading {
             return None;
         }
         let code = self.code.as_mut()?;
-        if code.requested || now < code.typed_at + CODE_DEBOUNCE {
+        if code.scope.is_some() || now < code.typed_at + CODE_DEBOUNCE {
             return None;
         }
-        code.requested = true;
+        let fuzzy = self.filter.query().to_owned();
+        let all: Vec<usize> = (0..self.commits.len()).collect();
+        let candidates: Vec<usize> = if fuzzy.trim().is_empty() {
+            all
+        } else {
+            filter::par_matches(&fuzzy, &self.commits, &all)
+                .into_iter()
+                .map(|h| h.commit)
+                .collect()
+        };
+        code.scope = Some(fuzzy);
         let mut seen = HashSet::new();
-        let shas = self
-            .commits
-            .iter()
-            .filter(|c| seen.insert(c.sha.as_str()))
-            .map(|c| c.sha.clone())
+        let shas = candidates
+            .into_iter()
+            .map(|i| &self.commits[i].sha)
+            .filter(|sha| seen.insert(sha.as_str()))
+            .cloned()
             .collect();
         Some(CodeRequest {
             pattern: code.pattern.clone(),
@@ -362,7 +389,7 @@ impl App {
     /// waiting out its debounce.
     pub fn deadline(&self) -> Option<Instant> {
         let code = self.code.as_ref()?;
-        (!code.requested && !self.loading).then(|| code.typed_at + CODE_DEBOUNCE)
+        (code.scope.is_none() && !self.loading).then(|| code.typed_at + CODE_DEBOUNCE)
     }
 
     /// Records code-search matches and shows the commits that also pass the
@@ -695,26 +722,22 @@ mod bench {
             return;
         };
         let root = std::path::PathBuf::from(path);
-        let shas: Vec<String> = crate::git::log(&root, Source::Log)
+        let commits: Vec<Commit> = crate::git::log(&root, Source::Log)
             .unwrap()
-            .map(|c| c.unwrap().sha)
+            .map(Result::unwrap)
             .collect();
-        for pattern in [
-            "xstrdup_or_null",
-            "git_parse_ssize_t",
-            "ODM_gear_nonexistent",
-        ] {
+        let all: Vec<usize> = (0..commits.len()).collect();
+        let search = |pattern: &str, shas: Vec<String>| {
             let (tx, rx) = std::sync::mpsc::channel();
-            let searcher = crate::worker::CodeSearcher::new(root.clone(), tx);
             let t = Instant::now();
-            searcher.start(CodeRequest {
+            crate::worker::CodeSearcher::new(root.clone(), tx).start(CodeRequest {
                 pattern: pattern.into(),
-                shas: shas.clone(),
+                shas,
                 generation: 1,
             });
             let (mut hits, mut first) = (0, None);
-            loop {
-                match rx.recv().unwrap() {
+            for msg in rx {
+                match msg {
                     Msg::CodeHits(_, h) => {
                         hits += h.len();
                         first.get_or_insert(t.elapsed());
@@ -726,10 +749,27 @@ mod bench {
                     _ => {}
                 }
             }
+            (hits, first, t.elapsed())
+        };
+        for fuzzy in ["", "parse", "parse.c"] {
+            let scoped: Vec<String> = filter::par_matches(fuzzy, &commits, &all)
+                .into_iter()
+                .map(|h| commits[h.commit].sha.clone())
+                .collect();
+            let n = scoped.len();
+            let (hits, _, all) = search("git_parse_ssize_t", scoped);
             println!(
-                "{pattern:>22}: {hits:>5} commits, first {first:.2?}, all {:.2?}",
-                t.elapsed()
+                "{fuzzy:>8} /c git_parse_ssize_t: {n:>5} commits searched, {hits} hits, {all:.2?}"
             );
+        }
+        let shas: Vec<String> = commits.iter().map(|c| c.sha.clone()).collect();
+        for pattern in [
+            "xstrdup_or_null",
+            "git_parse_ssize_t",
+            "ODM_gear_nonexistent",
+        ] {
+            let (hits, first, all) = search(pattern, shas.clone());
+            println!("{pattern:>22}: {hits:>5} commits, first {first:.2?}, all {all:.2?}");
         }
     }
 }

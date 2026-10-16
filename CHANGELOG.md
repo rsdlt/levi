@@ -12,6 +12,9 @@ the search commands, the sha printed on stdout and the exit codes.
 - History loads on every core at once. On git.git (82k commits) the whole log, file lists
   included, is ready in under a second instead of 5–9 seconds, so file search covers all of
   history sooner and `/c` starts sooner.
+- `/c` only searches the commits that match the rest of the query, so `parse.c /c foo` on
+  git.git takes about 1.5 seconds instead of 9. Narrowing the query keeps the results; widening
+  it searches again once typing pauses.
 
 ## [0.2.0] - 2026-10-16
 

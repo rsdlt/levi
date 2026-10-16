@@ -84,11 +84,12 @@ parse.rs /c let x =            ...in parse.rs only
 /r /c experiment               that code from a branch you deleted
 ```
 
-The code search is the one thing that isn't instant: git has to diff every commit. levi waits
-until you pause typing, splits history across all your cores and streams matches in as they're
-found, with progress in the status line. On git.git that's about 9 seconds instead of 55; on a
-normal repository it's over before you notice. Edit the query and the old search is dropped on
-the spot.
+The code search is the one thing that isn't instant: git has to diff every commit it checks.
+levi waits until you pause typing, only checks the commits that match the rest of your query,
+splits them across all your cores and streams matches in as they're found, with progress in the
+status line. On git.git a search of all 82k commits takes about 9 seconds instead of 55, and
+`parse.c /c ...` about 1.5; on a normal repository it's over before you notice. Edit the query
+and the old search is dropped on the spot.
 
 ## Field report
 
