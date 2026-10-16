@@ -1,0 +1,27 @@
+# Supply-chain checks: `cargo deny check`. Run it after every dependency upgrade.
+
+[licenses]
+# Every license here is open source and compatible with shipping levi under MIT.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSL-1.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+    # nucleo-matcher. File-level copyleft: fine to depend on unmodified; changes
+    # to its own files would have to be published under MPL.
+    "MPL-2.0",
+]
+
+[advisories]
+# Fails on crates with known vulnerabilities (RustSec advisory database).
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

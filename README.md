@@ -77,6 +77,17 @@ As you type, the commits and files columns narrow down together, like a squad cl
   It doesn't touch your repository, and it leaves your terminal exactly as it found it, even if
   it crashes. He'd never leave a mess.
 
+## Cleaning duty
+
+Levi inspects the barracks regularly. So should you:
+
+- After upgrading dependencies (`cargo update`, or `cargo upgrade` for major versions), run
+  `cargo test` and [`cargo deny check`](https://github.com/EmbarkStudios/cargo-deny). It fails
+  on any license not allowed in `deny.toml`, and on dependencies with known vulnerabilities.
+- To release, list the changes under "Unreleased" in [CHANGELOG.md](CHANGELOG.md), bump
+  `version` in `Cargo.toml` following [SemVer](https://semver.org/), commit "Release x.y.z", and
+  tag it `vx.y.z`.
+
 ## License
 
 [MIT](LICENSE). Free to use, like a cup of black tea, held however you like.
