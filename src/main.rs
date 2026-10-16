@@ -1,4 +1,5 @@
 mod app;
+mod filter;
 mod git;
 mod ui;
 mod worker;

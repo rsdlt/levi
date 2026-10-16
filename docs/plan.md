@@ -41,10 +41,25 @@ All commands run as `git --literal-pathspecs` (so paths like `glob*.txt` aren't 
 
 ## Search semantics
 
-- A commit stays in column a if the query matches its **hash, subject or author**, **or any file it touched**.
-- Column b shows only the matching files. If the commit matched on hash/subject/author, it shows all its files.
-- Results are ranked by score; ties keep chronological order. Matched characters are highlighted.
+- A commit stays in column a if the query matches its **header** (subject + author), **or any file it touched**, **or its sha**.
+- Column b shows only the matching files. If the commit matched on header or sha, it shows all its files.
+- Results are ranked by score; ties keep log order (newest first). Matched characters are highlighted.
 - Typing `parse.rs` answers "which commits touched parse.rs?" right away.
+
+Details settled while building:
+
+- **Sha is prefix-only**, not fuzzy: the whole query, if it's ≥4 hex chars, matches commits whose sha starts with it (ranked first). Fuzzy-matching hashes would make queries like `add` or `bad` match nearly everything.
+- **Header is one haystack** (`subject\tauthor`), so a negation like `!wip` drops the commit if either field contains it. **Files are matched one by one** (path, or old path for renames), so `!test` lists a commit's non-test files.
+- Every atom of a query must match within the same haystack (the header, or a single file path).
+- Files use nucleo's path-aware scoring; the header uses the default config.
+
+### Filtering performance
+
+- Typing only edits the query; the view is refiltered once per frame (or before any key that needs it), so keystroke bursts cost one pass.
+- When the new query just extends the old one (and neither adds `!`, `$` or `\`), only the previous hits are rescanned.
+- Matching runs on all cores (`std::thread::scope`, one matcher per thread).
+- Lists render only their visible rows, so drawing cost is independent of log size.
+- git.git, 82.5k commits / 271k file entries, 12 cores: 5–12 ms per refilter (was 25–45 ms single-threaded).
 
 ## Performance
 

@@ -4,6 +4,7 @@ use std::collections::{HashMap, VecDeque};
 
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
+use crate::filter::{self, Filter, Hit};
 use crate::git::{Commit, DiffLine, FileChange};
 
 /// Diffs kept in memory; older ones are refetched on demand.
@@ -70,13 +71,22 @@ pub enum Exit {
 }
 
 pub struct App {
+    /// Everything loaded so far, in log order.
     pub commits: Vec<Commit>,
+    /// What the commits pane shows: commits matching the query, best first.
+    pub view: Vec<Hit>,
+    pub filter: Filter,
     pub loading: bool,
     pub log_error: Option<String>,
     pub query: String,
     pub focus: Focus,
+    /// Index into `view`.
     pub commit_idx: usize,
+    /// Index into `files()`.
     pub file_idx: usize,
+    /// First visible row of each list, maintained by the renderer.
+    pub commit_offset: usize,
+    pub file_offset: usize,
     pub diff_scroll: usize,
     /// Rows visible in the diff pane, updated on every draw.
     pub diff_height: usize,
@@ -90,12 +100,16 @@ impl App {
     pub fn new() -> App {
         App {
             commits: Vec::new(),
+            view: Vec::new(),
+            filter: Filter::new(),
             loading: true,
             log_error: None,
             query: String::new(),
             focus: Focus::Commits,
             commit_idx: 0,
             file_idx: 0,
+            commit_offset: 0,
+            file_offset: 0,
             diff_scroll: 0,
             diff_height: 0,
             exit: None,
@@ -106,9 +120,20 @@ impl App {
 
     pub fn update(&mut self, msg: Msg) {
         match msg {
-            Msg::Input(Event::Key(key)) if key.kind == KeyEventKind::Press => self.handle_key(key),
+            Msg::Input(Event::Key(key)) if key.kind == KeyEventKind::Press => {
+                // Typing only edits the query; filtering waits for `settle`, so a
+                // burst of keystrokes costs one pass. Anything else needs the
+                // up-to-date view first.
+                if !is_query_edit(&key) {
+                    self.settle();
+                }
+                self.handle_key(key);
+            }
             Msg::Input(_) => {}
-            Msg::Commits(batch) => self.commits.extend(batch),
+            Msg::Commits(batch) => {
+                self.settle();
+                self.add_commits(batch);
+            }
             Msg::LogDone(result) => {
                 self.loading = false;
                 self.log_error = result.err();
@@ -117,8 +142,46 @@ impl App {
         }
     }
 
+    /// Applies a changed query to the view. Selection jumps to the best match.
+    pub fn settle(&mut self) {
+        if self.query == self.filter.query() {
+            return;
+        }
+        let narrows = self.filter.set_query(&self.query);
+        let candidates: Vec<usize> = if narrows {
+            self.view.iter().map(|h| h.commit).collect()
+        } else {
+            (0..self.commits.len()).collect()
+        };
+        self.view = filter::par_matches(&self.query, &self.commits, &candidates);
+        filter::sort(&mut self.view);
+        self.commit_idx = 0;
+        self.file_idx = 0;
+        self.diff_scroll = 0;
+    }
+
+    /// Appends newly loaded commits, keeping the selection on the same commit.
+    fn add_commits(&mut self, batch: Vec<Commit>) {
+        let selected = self.hit().map(|h| h.commit);
+        let start = self.commits.len();
+        self.commits.extend(batch);
+        for i in start..self.commits.len() {
+            if let Some(hit) = self.filter.matches(i, &self.commits[i]) {
+                self.view.push(hit);
+            }
+        }
+        // With no query the view is already in log order.
+        if !self.filter.is_empty() {
+            filter::sort(&mut self.view);
+            if let Some(selected) = selected {
+                self.commit_idx = self.view.iter().position(|h| h.commit == selected).unwrap_or(0);
+            }
+        }
+    }
+
     /// The diff the selection needs, if it isn't cached and wasn't already asked for.
     pub fn take_diff_request(&mut self) -> Option<DiffRequest> {
+        self.settle();
         let commit = self.commit()?;
         let file = self.file()?;
         let req = DiffRequest {
@@ -136,12 +199,28 @@ impl App {
         Some(req)
     }
 
+    pub fn hit(&self) -> Option<&Hit> {
+        self.view.get(self.commit_idx)
+    }
+
     pub fn commit(&self) -> Option<&Commit> {
-        self.commits.get(self.commit_idx)
+        self.hit().map(|h| &self.commits[h.commit])
+    }
+
+    /// Files of the selected commit that match the query.
+    pub fn files(&self) -> Vec<&FileChange> {
+        let Some(hit) = self.hit() else {
+            return Vec::new();
+        };
+        let files = &self.commits[hit.commit].files;
+        match &hit.files {
+            None => files.iter().collect(),
+            Some(matching) => matching.iter().map(|&i| &files[i]).collect(),
+        }
     }
 
     pub fn file(&self) -> Option<&FileChange> {
-        self.commit()?.files.get(self.file_idx)
+        self.files().get(self.file_idx).copied()
     }
 
     pub fn diff(&self) -> DiffView<'_> {
@@ -189,7 +268,7 @@ impl App {
     fn move_selection(&mut self, delta: isize) {
         match self.focus {
             Focus::Commits => {
-                let idx = step(self.commit_idx, delta, self.commits.len());
+                let idx = step(self.commit_idx, delta, self.view.len());
                 if idx != self.commit_idx {
                     self.commit_idx = idx;
                     self.file_idx = 0;
@@ -197,7 +276,7 @@ impl App {
                 }
             }
             Focus::Files => {
-                let len = self.commit().map_or(0, |c| c.files.len());
+                let len = self.files().len();
                 let idx = step(self.file_idx, delta, len);
                 if idx != self.file_idx {
                     self.file_idx = idx;
@@ -214,6 +293,15 @@ impl App {
             _ => 0,
         };
         self.diff_scroll = step(self.diff_scroll, delta, lines);
+    }
+}
+
+/// Keys that only change the query (see `handle_key`).
+fn is_query_edit(key: &KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Char(_) => !key.modifiers.contains(KeyModifiers::CONTROL),
+        KeyCode::Backspace | KeyCode::Esc => true,
+        _ => false,
     }
 }
 
@@ -276,5 +364,33 @@ mod tests {
         assert!(cache.get(&key(0)).is_some(), "recently touched survives");
         assert!(cache.get(&key(1)).is_none(), "oldest is evicted");
         assert_eq!(cache.map.len(), DIFF_CACHE_SIZE);
+    }
+}
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+    use std::time::Instant;
+
+    /// `LEVI_BENCH_REPO=/path/to/big/repo cargo test --release bench -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn filter_speed() {
+        let Ok(path) = std::env::var("LEVI_BENCH_REPO") else {
+            return;
+        };
+        let t = Instant::now();
+        let commits: Vec<Commit> = crate::git::log(path.as_ref()).unwrap().map(Result::unwrap).collect();
+        let files: usize = commits.iter().map(|c| c.files.len()).sum();
+        println!("load: {} commits, {files} files in {:?}", commits.len(), t.elapsed());
+
+        let mut app = App::new();
+        app.update(Msg::Commits(commits));
+        for query in ["e", "pa", "par", "pars", "parse", "parse.c", "Documentation/", "!t", "zzzzz", "", "junio"] {
+            app.query = query.into();
+            let t = Instant::now();
+            app.settle();
+            println!("{query:>16}: {:>6} hits in {:?}", app.view.len(), t.elapsed());
+        }
     }
 }
