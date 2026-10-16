@@ -74,6 +74,21 @@ still a plain search.
 | Command | What it does |
 |---|---|
 | `/r` | Switches to the **reflog**: every place HEAD has been, including commits on branches you've since deleted. The rest of the query filters it, by action too (`/r checkout`). Remove `/r` to go back to the log. |
+| `/c text` | Searches the **code**: keeps commits whose diffs add or remove a line containing `text`, and only the files where that happens. Everything after `/c` is the text, spaces included; it's matched literally, ignoring case unless you type a capital. The diff jumps to the first match and highlights it. |
+
+They combine with everything else:
+
+```
+/c git_parse_ssize_t           which commits touched this function?
+parse.rs /c let x =            ...in parse.rs only
+/r /c experiment               that code from a branch you deleted
+```
+
+The code search is the one thing that isn't instant: git has to diff every commit. levi waits
+until you pause typing, splits history across all your cores and streams matches in as they're
+found, with progress in the status line. On git.git that's about 9 seconds instead of 55; on a
+normal repository it's over before you notice. Edit the query and the old search is dropped on
+the spot.
 
 ## Field report
 
@@ -83,6 +98,8 @@ still a plain search.
   the boulders start flying.
 - **Small.** About 1,100 lines of Rust (not counting tests) and a 1.6 MB binary. Short, and
   still the strongest.
+- **Relentless.** `/c` hunts through every diff in history on every core at once, and stops
+  the moment you change your mind.
 - **Precise.** It shows the current branch, newest first. Merge commits are diffed against their
   first parent. A sha search matches only real prefixes, so `add` doesn't fuzzy-match half
   your hashes.

@@ -11,9 +11,10 @@ mod testutil;
 use std::io::{self, Stderr};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::mpsc;
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::execute;
@@ -35,6 +36,8 @@ fzf syntax: 'exact  ^prefix  suffix$  !negate  (space-separated terms all match)
 
 Commands (whole words in the search bar):
   /r                  search the reflog instead of the log: /r checkout
+  /c text             keep commits whose diffs add or remove `text` (the rest of
+                      the line, literal, smart case): parse.rs /c let x =
 
 Keys:
   ↑/↓  C-p/C-n        move in the focused pane
@@ -92,17 +95,35 @@ fn run(terminal: &mut Tui, app: &mut App, root: PathBuf) -> Result<()> {
     let (tx, rx) = mpsc::channel();
     worker::spawn_input(tx.clone());
     let logs = worker::LogLoader::new(root.clone(), tx.clone());
+    let code = worker::CodeSearcher::new(root.clone(), tx.clone());
     let diffs = worker::spawn_diff(root, tx);
 
     while app.exit.is_none() {
         if let Some(req) = app.take_log_request() {
             logs.start(req);
         }
+        if app.take_code_cancel() {
+            code.cancel();
+        }
+        if let Some(req) = app.take_code_request(Instant::now()) {
+            code.start(req);
+        }
         if let Some(req) = app.take_diff_request() {
             diffs.send(req)?;
         }
         terminal.draw(|frame| ui::draw(frame, app))?;
-        app.update(rx.recv()?);
+        // Sleep until something happens, or until a pending code search is due.
+        let msg = match app.deadline() {
+            Some(due) => match rx.recv_timeout(due.saturating_duration_since(Instant::now())) {
+                Ok(msg) => Some(msg),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => bail!("event channel closed"),
+            },
+            None => Some(rx.recv()?),
+        };
+        if let Some(msg) = msg {
+            app.update(msg);
+        }
         // Apply everything that queued up during the draw before drawing again.
         while let Ok(msg) = rx.try_recv() {
             app.update(msg);

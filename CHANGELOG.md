@@ -11,6 +11,10 @@ the sha printed on stdout and the exit codes.
 
 - `/r` in the search bar switches to the reflog: every place HEAD has been, including commits
   on deleted branches. The rest of the query filters it, by reflog action too.
+- `/c text` searches the code: it keeps commits whose diffs add or remove a line containing
+  `text`, and only the files where that happens. The match is literal with smart case; the diff
+  jumps to it and highlights it. The search starts when typing pauses, runs on every core,
+  streams results with progress, and is cancelled as soon as the query changes.
 
 - GitHub Actions CI: tests on Linux and macOS, rustfmt, clippy, the minimum Rust version
   (1.88), and `cargo deny`.

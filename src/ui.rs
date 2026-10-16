@@ -8,7 +8,7 @@ use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 
 use crate::app::{App, DiffView, Focus};
 use crate::git::{LineKind, Status};
-use crate::query::Source;
+use crate::query::{Source, find_code};
 
 const ACCENT: Color = Color::Cyan;
 
@@ -55,7 +55,7 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
         Span::raw(&app.query),
         Span::styled("█", Style::new().fg(ACCENT)),
     ]);
-    let count = if app.filter.is_empty() {
+    let count = if app.filter.is_empty() && app.code.is_none() {
         app.commits.len().to_string()
     } else {
         format!("{}/{}", app.view.len(), app.commits.len())
@@ -64,14 +64,38 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
         Source::Log => "commits",
         Source::Reflog => "reflog entries",
     };
-    let status = match &app.log_error {
+    let mut status = match &app.log_error {
         Some(err) => Line::styled(format!(" {err} "), Color::Red),
         None if app.loading => Line::from(format!(" {count} {noun}… ")),
         None => Line::from(format!(" {count} {noun} ")),
     };
+    match &app.code {
+        Some(code) if code.error.is_some() => status.push_span(Span::styled(
+            format!(
+                "· code search failed: {} ",
+                code.error.as_deref().unwrap_or_default()
+            ),
+            Color::Red,
+        )),
+        Some(code) if !code.finished => {
+            let (done, total) = code.progress;
+            let percent = (done * 100).checked_div(total).unwrap_or(0);
+            status.push_span(Span::styled(
+                format!("· searching code {percent}% "),
+                Style::new().fg(ACCENT),
+            ));
+        }
+        _ => {}
+    }
     let mut title = vec![Span::raw(" "), "levi".bold()];
     if app.source == Source::Reflog {
         title.push(Span::styled(" · reflog", Style::new().fg(ACCENT)));
+    }
+    if let Some(code) = &app.code {
+        title.push(Span::styled(
+            format!(" · code: {}", code.pattern),
+            Style::new().fg(ACCENT),
+        ));
     }
     title.push(Span::raw(" "));
     let block = Block::bordered()
@@ -145,11 +169,14 @@ fn draw_commits(frame: &mut Frame, app: &mut App, area: Rect) {
             ListItem::new(Line::from(spans))
         })
         .collect();
-    if items.is_empty() && !app.query.trim().is_empty() && !app.loading {
-        items.push(ListItem::new(Line::styled(
-            "no matches",
-            Style::new().dim(),
-        )));
+    if items.is_empty() && !app.query.trim().is_empty() {
+        let searching = app.loading || app.code.as_ref().is_some_and(|c| !c.finished);
+        let note = if searching {
+            "searching…"
+        } else {
+            "no matches"
+        };
+        items.push(ListItem::new(Line::styled(note, Style::new().dim())));
     }
     let row = app.commit_idx - app.commit_offset;
     draw_window(frame, area, block, items, row, focused);
@@ -256,7 +283,10 @@ fn draw_diff(frame: &mut Frame, app: &mut App, area: Rect) {
             .iter()
             .skip(app.diff_scroll)
             .take(app.diff_height)
-            .map(|l| Line::styled(l.text.as_str(), line_style(l.kind)))
+            .map(|l| match &app.code {
+                Some(code) => code_highlighted(&l.text, &code.pattern, line_style(l.kind)),
+                None => Line::styled(l.text.as_str(), line_style(l.kind)),
+            })
             .collect(),
         DiffView::Failed(err) => vec![Line::styled(err, Color::Red)],
         DiffView::Loading => vec![Line::styled("loading…", Style::new().dim())],
@@ -266,6 +296,29 @@ fn draw_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         DiffView::Empty => vec![],
     };
     frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// A diff line with every occurrence of the code-search text marked.
+fn code_highlighted<'a>(text: &'a str, pattern: &str, style: Style) -> Line<'a> {
+    let mut spans = Vec::new();
+    let mut at = 0;
+    for range in find_code(text, pattern) {
+        spans.push(Span::styled(&text[at..range.start], style));
+        spans.push(Span::styled(
+            &text[range.clone()],
+            style.patch(code_match()),
+        ));
+        at = range.end;
+    }
+    spans.push(Span::styled(&text[at..], style));
+    Line::from(spans)
+}
+
+fn code_match() -> Style {
+    Style::new()
+        .fg(Color::Black)
+        .bg(Color::Yellow)
+        .add_modifier(Modifier::BOLD)
 }
 
 fn line_style(kind: LineKind) -> Style {
@@ -538,5 +591,168 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         let req = app.take_log_request().unwrap();
         assert_eq!((req.source, req.generation), (Source::Log, 2));
+    }
+
+    /// Plays the code searcher's part synchronously, as if typing paused long enough.
+    fn serve_code(app: &mut App, repo: &Repo) {
+        let later = std::time::Instant::now() + crate::app::CODE_DEBOUNCE * 2;
+        let req = app.take_code_request(later).expect("a code search is due");
+        let hits = git::code_search(repo.path(), &req.pattern, &req.shas)
+            .unwrap()
+            .collect();
+        app.update(Msg::CodeHits(req.generation, hits));
+        app.update(Msg::CodeDone(req.generation, Ok(())));
+    }
+
+    fn battlefield() -> Repo {
+        let repo = Repo::new();
+        let lines: Vec<String> = (1..=40).map(|n| format!("line {n}")).collect();
+        repo.write("a.rs", &(lines.join("\n") + "\n"));
+        repo.write("README.md", "levi\n");
+        repo.commit("walls");
+        let mut changed = lines.clone();
+        changed[29] = "attack titan".into();
+        repo.write("a.rs", &(changed.join("\n") + "\n"));
+        repo.write("wall.md", "attack\n");
+        repo.commit("expedition");
+        repo.write("README.md", "levi ackerman\n");
+        repo.commit("docs");
+        repo
+    }
+
+    fn loaded(repo: &Repo) -> App {
+        let mut app = App::new();
+        app.update(Msg::Commits(0, repo.log()));
+        app.update(Msg::LogDone(0, Ok(())));
+        app
+    }
+
+    #[test]
+    fn slash_c_searches_the_diffs() {
+        let repo = battlefield();
+        let mut app = loaded(&repo);
+
+        type_str(&mut app, "/c attack");
+        // Typing just paused: nothing yet.
+        assert!(app.take_code_request(std::time::Instant::now()).is_none());
+        assert!(app.deadline().is_some(), "the loop must wake up for it");
+        assert!(render(&mut app).contains("searching…"));
+
+        serve_code(&mut app, &repo);
+        serve_diffs(&mut app, &repo);
+        let screen = render(&mut app);
+        println!("{screen}");
+        assert!(screen.contains("levi · code: attack"));
+        assert!(screen.contains("1/3 commits"));
+        assert!(screen.contains("expedition"));
+        assert!(!screen.contains("docs") && !screen.contains("walls"));
+        assert!(screen.contains("M a.rs") && screen.contains("A wall.md"));
+
+        // The diff jumped down to the match, which is highlighted.
+        assert!(app.diff_scroll > 0, "scrolled to the match");
+        assert!(screen.contains("+attack titan"));
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let marked = (0..100)
+            .flat_map(|x| (0..20).map(move |y| (x, y)))
+            .filter(|&(x, y)| buf[(x, y)].bg == Color::Yellow)
+            .count();
+        assert_eq!(marked, "attack".len());
+    }
+
+    #[test]
+    fn slash_c_combines_with_fuzzy() {
+        let repo = battlefield();
+        let mut app = loaded(&repo);
+        type_str(&mut app, "wall /c attack");
+        serve_code(&mut app, &repo);
+        assert_eq!(app.view.len(), 1);
+        let files: Vec<_> = app.files().iter().map(|f| f.path.clone()).collect();
+        assert_eq!(files, ["wall.md"], "both filters apply to files");
+
+        // Changing only the fuzzy part reuses the code results: no new search.
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "README /c attack");
+        let later = std::time::Instant::now() + crate::app::CODE_DEBOUNCE * 2;
+        assert!(app.take_code_request(later).is_none());
+        // README changed in `walls` and `docs`, but neither diff says `attack`.
+        assert!(app.view.is_empty());
+    }
+
+    #[test]
+    fn slash_c_restarts_and_ignores_stale_results() {
+        let repo = battlefield();
+        let mut app = loaded(&repo);
+        type_str(&mut app, "/c attack");
+        let later = std::time::Instant::now() + crate::app::CODE_DEBOUNCE * 2;
+        let old = app.take_code_request(later).unwrap();
+        assert!(app.take_code_cancel(), "a new search cancels whatever ran");
+
+        type_str(&mut app, "er");
+        app.settle();
+        assert!(
+            app.take_code_cancel(),
+            "editing the pattern cancels the old search"
+        );
+        // The old search's results arrive late and are ignored.
+        let hits = git::code_search(repo.path(), &old.pattern, &old.shas)
+            .unwrap()
+            .collect();
+        app.update(Msg::CodeHits(old.generation, hits));
+        assert!(app.view.is_empty());
+
+        serve_code(&mut app, &repo);
+        assert!(app.view.is_empty(), "nothing says `attacker`");
+        assert!(render(&mut app).contains("no matches"));
+
+        // Removing `/c` brings everything back.
+        for _ in 0.."/c attacker".len() {
+            press(&mut app, KeyCode::Backspace);
+        }
+        app.settle();
+        assert!(app.code.is_none());
+        assert_eq!(app.view.len(), 3);
+        assert!(app.take_code_cancel());
+    }
+
+    #[test]
+    fn slash_c_waits_for_the_log() {
+        let repo = battlefield();
+        let mut app = App::new();
+        type_str(&mut app, "/c attack");
+        let later = std::time::Instant::now() + crate::app::CODE_DEBOUNCE * 2;
+        app.update(Msg::Commits(0, repo.log()));
+        assert!(
+            app.take_code_request(later).is_none(),
+            "the list isn't complete yet"
+        );
+        app.update(Msg::LogDone(0, Ok(())));
+        assert_eq!(app.take_code_request(later).unwrap().shas.len(), 3);
+    }
+
+    #[test]
+    fn slash_r_slash_c_searches_each_reflog_commit_once() {
+        let repo = battlefield();
+        repo.git(&["checkout", "-q", "-b", "scouts"]);
+        repo.git(&["checkout", "-q", "main"]);
+        let mut app = App::new();
+        type_str(&mut app, "/r /c attack");
+        let req = app.take_log_request().unwrap();
+        assert_eq!(req.source, Source::Reflog);
+        let entries: Vec<_> = git::log(repo.path(), Source::Reflog)
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let entry_count = entries.len();
+        app.update(Msg::Commits(req.generation, entries));
+        app.update(Msg::LogDone(req.generation, Ok(())));
+        let later = std::time::Instant::now() + crate::app::CODE_DEBOUNCE * 2;
+        let code = app.take_code_request(later).unwrap();
+        assert_eq!(
+            code.shas.len(),
+            3,
+            "{entry_count} entries, 3 distinct commits"
+        );
     }
 }

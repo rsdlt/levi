@@ -133,6 +133,21 @@ and `/cache` stay fuzzy text; git paths never start with `/`.
   the reflog action, and the fuzzy header haystack includes it. Entries can repeat a commit.
 - **`/c` — code search.** Everything after it, spaces included, is the text the diffs must
   contain; what's before it stays fuzzy. `/r /c foo` searches the code of reflog commits.
+  - Engine: `git log -G` (added/removed lines), fed explicit shas with `--stdin --no-walk`,
+    `--name-only` for the matching paths. The text is regex-escaped (git speaks POSIX ERE) so it
+    matches literally; `--regexp-ignore-case` unless the text has an uppercase letter.
+  - Parallel: the loaded commits (deduplicated for the reflog) are cut into chunks of 500, newest
+    first; one thread per core pulls chunks and runs its own git. Matches stream back as
+    `CodeHits`, progress as chunks finish.
+  - Starts 300 ms after typing pauses, and only once the log is fully loaded. A changed pattern
+    or source bumps the code generation: running gits are killed at once and late results are
+    dropped. Changing only the fuzzy part reuses the results.
+  - A commit shows if it passes both filters; its files are the intersection (fuzzy file matches,
+    or all files when the header matched, ∩ files whose diff matched).
+  - The diff scrolls to the first added/removed line containing the text (3 lines of context)
+    and highlights every occurrence.
+  - git.git (82.5k commits, 12 cores): ~9.3 s for a full search vs ~55 s single-process; first
+    hit for a common identifier in ~0.15 s. Cancelling kills all gits within 0.3 s.
 
 Each load has a generation number: switching source starts a new one, the old loader stops at its
 next commit (killing its git), and late messages from old generations are dropped.

@@ -1,15 +1,21 @@
 //! Application state and key handling.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::mem;
+use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::filter::{self, Filter, Hit};
-use crate::git::{Commit, DiffLine, FileChange};
-use crate::query::{self, Source};
+use crate::git::{Commit, DiffLine, FileChange, LineKind};
+use crate::query::{self, Source, find_code};
 
 /// Diffs kept in memory; older ones are refetched on demand.
 const DIFF_CACHE_SIZE: usize = 128;
+/// A code search starts once typing pauses this long, not on every keystroke.
+pub const CODE_DEBOUNCE: Duration = Duration::from_millis(300);
+/// Lines kept above a code match when the diff jumps to it.
+const JUMP_CONTEXT: usize = 3;
 
 /// (commit sha, file path)
 pub type DiffKey = (String, String);
@@ -21,6 +27,55 @@ pub enum Msg {
     Commits(u64, Vec<Commit>),
     LogDone(u64, Result<(), String>),
     Diff(DiffKey, DiffResult),
+    /// Commits from code search `u64` whose diffs matched, with the matching paths.
+    CodeHits(u64, Vec<(String, Vec<String>)>),
+    /// Chunks searched so far, out of how many.
+    CodeProgress(u64, usize, usize),
+    CodeDone(u64, Result<(), String>),
+}
+
+/// Search the diffs of `shas` for `pattern`. A higher generation supersedes the rest.
+pub struct CodeRequest {
+    pub pattern: String,
+    pub shas: Vec<String>,
+    pub generation: u64,
+}
+
+/// A `/c` search: what was asked and what has come back so far.
+pub struct CodeSearch {
+    pub pattern: String,
+    generation: u64,
+    /// sha → paths whose diffs matched.
+    hits: HashMap<String, Vec<String>>,
+    /// Chunks searched, out of how many.
+    pub progress: (usize, usize),
+    pub finished: bool,
+    pub error: Option<String>,
+    requested: bool,
+    typed_at: Instant,
+}
+
+impl CodeSearch {
+    /// Narrows a fuzzy hit to the files whose diffs matched; `None` if none did.
+    fn admit(&self, commits: &[Commit], mut hit: Hit) -> Option<Hit> {
+        let commit = &commits[hit.commit];
+        let paths = self.hits.get(&commit.sha)?;
+        let matched = |i: &usize| {
+            let f = &commit.files[*i];
+            paths
+                .iter()
+                .any(|p| *p == f.path || Some(p) == f.old_path.as_ref())
+        };
+        let files: Vec<usize> = match &hit.files {
+            None => (0..commit.files.len()).filter(matched).collect(),
+            Some(files) => files.iter().copied().filter(matched).collect(),
+        };
+        if files.is_empty() {
+            return None;
+        }
+        hit.files = Some(files);
+        Some(hit)
+    }
 }
 
 /// Load `source` into the commits column. A higher generation supersedes the rest.
@@ -91,6 +146,8 @@ pub struct App {
     pub query: String,
     /// Where the commits column comes from, as of the last `settle`.
     pub source: Source,
+    /// The running or finished `/c` search, if the query has one.
+    pub code: Option<CodeSearch>,
     pub focus: Focus,
     /// Index into `view`.
     pub commit_idx: usize,
@@ -110,6 +167,13 @@ pub struct App {
     applied: String,
     generation: u64,
     log_request: Option<LogRequest>,
+    /// Where each sha sits in `commits` (the reflog can repeat one).
+    by_sha: HashMap<String, Vec<usize>>,
+    code_generation: u64,
+    /// Running searches must stop.
+    code_cancel: bool,
+    /// The diff that was last scrolled to its first code match.
+    jumped: Option<DiffKey>,
 }
 
 impl App {
@@ -122,6 +186,7 @@ impl App {
             log_error: None,
             query: String::new(),
             source: Source::Log,
+            code: None,
             focus: Focus::Commits,
             commit_idx: 0,
             file_idx: 0,
@@ -138,6 +203,10 @@ impl App {
                 source: Source::Log,
                 generation: 0,
             }),
+            by_sha: HashMap::new(),
+            code_generation: 0,
+            code_cancel: false,
+            jumped: None,
         }
     }
 
@@ -165,6 +234,21 @@ impl App {
                 self.log_error = result.err();
             }
             Msg::Diff(key, result) => self.diffs.insert(key, result),
+            Msg::CodeHits(generation, hits) => {
+                self.settle();
+                self.add_code_hits(generation, hits);
+            }
+            Msg::CodeProgress(generation, done, total) => {
+                if let Some(code) = self.code.as_mut().filter(|c| c.generation == generation) {
+                    code.progress = (done, total);
+                }
+            }
+            Msg::CodeDone(generation, result) => {
+                if let Some(code) = self.code.as_mut().filter(|c| c.generation == generation) {
+                    code.finished = true;
+                    code.error = result.err();
+                }
+            }
         }
     }
 
@@ -175,18 +259,33 @@ impl App {
         }
         self.applied = self.query.clone();
         let parsed = query::parse(&self.query);
-        if parsed.source != self.source {
+        let switched = parsed.source != self.source;
+        if switched {
             self.switch_source(parsed.source);
-        } else if parsed.fuzzy == self.filter.query() {
+        }
+        let code_changed =
+            switched || parsed.code.as_deref() != self.code.as_ref().map(|c| c.pattern.as_str());
+        if code_changed {
+            self.restart_code(parsed.code);
+        }
+        if !code_changed && parsed.fuzzy == self.filter.query() {
             return;
         }
-        let narrows = self.filter.set_query(&parsed.fuzzy);
+        // A new code search starts from nothing, so previous hits can't be reused.
+        let narrows = self.filter.set_query(&parsed.fuzzy) && !code_changed;
         let candidates: Vec<usize> = if narrows {
             self.view.iter().map(|h| h.commit).collect()
         } else {
             (0..self.commits.len()).collect()
         };
         self.view = filter::par_matches(&parsed.fuzzy, &self.commits, &candidates);
+        if let Some(code) = &self.code {
+            let hits = mem::take(&mut self.view);
+            self.view = hits
+                .into_iter()
+                .filter_map(|h| code.admit(&self.commits, h))
+                .collect();
+        }
         filter::sort(&mut self.view);
         self.commit_idx = 0;
         self.file_idx = 0;
@@ -203,8 +302,121 @@ impl App {
         });
         self.commits.clear();
         self.view.clear();
+        self.by_sha.clear();
         self.loading = true;
         self.log_error = None;
+    }
+
+    /// Drops the current code search and prepares `pattern`, if any. It's handed
+    /// out by `take_code_request` once typing pauses and the log is loaded.
+    fn restart_code(&mut self, pattern: Option<String>) {
+        self.code_cancel = true;
+        self.jumped = None;
+        self.code = pattern.map(|pattern| {
+            self.code_generation += 1;
+            CodeSearch {
+                pattern,
+                generation: self.code_generation,
+                hits: HashMap::new(),
+                progress: (0, 0),
+                finished: false,
+                error: None,
+                requested: false,
+                typed_at: Instant::now(),
+            }
+        });
+    }
+
+    /// Whether running code searches must stop. Asks once.
+    pub fn take_code_cancel(&mut self) -> bool {
+        mem::take(&mut self.code_cancel)
+    }
+
+    /// The code search to start: after typing paused for `CODE_DEBOUNCE`, over
+    /// every loaded commit once the log is complete.
+    pub fn take_code_request(&mut self, now: Instant) -> Option<CodeRequest> {
+        self.settle();
+        if self.loading {
+            return None;
+        }
+        let code = self.code.as_mut()?;
+        if code.requested || now < code.typed_at + CODE_DEBOUNCE {
+            return None;
+        }
+        code.requested = true;
+        let mut seen = HashSet::new();
+        let shas = self
+            .commits
+            .iter()
+            .filter(|c| seen.insert(c.sha.as_str()))
+            .map(|c| c.sha.clone())
+            .collect();
+        Some(CodeRequest {
+            pattern: code.pattern.clone(),
+            shas,
+            generation: code.generation,
+        })
+    }
+
+    /// When the main loop must wake up even without input: a code search
+    /// waiting out its debounce.
+    pub fn deadline(&self) -> Option<Instant> {
+        let code = self.code.as_ref()?;
+        (!code.requested && !self.loading).then(|| code.typed_at + CODE_DEBOUNCE)
+    }
+
+    /// Records code-search matches and shows the commits that also pass the
+    /// fuzzy filter.
+    fn add_code_hits(&mut self, generation: u64, hits: Vec<(String, Vec<String>)>) {
+        let Some(code) = self.code.as_mut().filter(|c| c.generation == generation) else {
+            return;
+        };
+        let selected = self.view.get(self.commit_idx).map(|h| h.commit);
+        for (sha, paths) in hits {
+            let positions = self.by_sha.get(&sha).cloned().unwrap_or_default();
+            code.hits.insert(sha, paths);
+            for i in positions {
+                if let Some(hit) = self.filter.matches(i, &self.commits[i]) {
+                    self.view.extend(code.admit(&self.commits, hit));
+                }
+            }
+        }
+        self.resort(selected);
+    }
+
+    /// Sorts the view and keeps `selected` (an index into `commits`) selected.
+    fn resort(&mut self, selected: Option<usize>) {
+        filter::sort(&mut self.view);
+        if let Some(selected) = selected {
+            self.commit_idx = self
+                .view
+                .iter()
+                .position(|h| h.commit == selected)
+                .unwrap_or(0);
+        }
+    }
+
+    /// Scrolls a freshly shown diff to the first changed line with the code match.
+    fn jump_to_code(&mut self) {
+        let (Some(code), Some(commit), Some(file)) = (&self.code, self.commit(), self.file())
+        else {
+            return;
+        };
+        let key = (commit.sha.clone(), file.path.clone());
+        if self.jumped.as_ref() == Some(&key) {
+            return;
+        }
+        let Some(Ok(lines)) = self.diffs.get(&key) else {
+            return;
+        };
+        let first = lines.iter().position(|l| {
+            matches!(l.kind, LineKind::Added | LineKind::Removed)
+                && !find_code(&l.text[1..], &code.pattern).is_empty()
+        });
+        if let Some(i) = first {
+            self.diff_scroll = i.saturating_sub(JUMP_CONTEXT);
+        }
+        self.jumped = Some(key);
     }
 
     /// The commit list to load, when the source changed.
@@ -219,26 +431,27 @@ impl App {
         let start = self.commits.len();
         self.commits.extend(batch);
         for i in start..self.commits.len() {
+            self.by_sha
+                .entry(self.commits[i].sha.clone())
+                .or_default()
+                .push(i);
             if let Some(hit) = self.filter.matches(i, &self.commits[i]) {
-                self.view.push(hit);
+                match &self.code {
+                    Some(code) => self.view.extend(code.admit(&self.commits, hit)),
+                    None => self.view.push(hit),
+                }
             }
         }
         // With no query the view is already in log order.
         if !self.filter.is_empty() {
-            filter::sort(&mut self.view);
-            if let Some(selected) = selected {
-                self.commit_idx = self
-                    .view
-                    .iter()
-                    .position(|h| h.commit == selected)
-                    .unwrap_or(0);
-            }
+            self.resort(selected);
         }
     }
 
     /// The diff the selection needs, if it isn't cached and wasn't already asked for.
     pub fn take_diff_request(&mut self) -> Option<DiffRequest> {
         self.settle();
+        self.jump_to_code();
         let commit = self.commit()?;
         let file = self.file()?;
         let req = DiffRequest {
@@ -469,6 +682,52 @@ mod bench {
             println!(
                 "{query:>16}: {:>6} hits in {:?}",
                 app.view.len(),
+                t.elapsed()
+            );
+        }
+    }
+
+    /// `LEVI_BENCH_REPO=... cargo test --release code_search_speed -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn code_search_speed() {
+        let Ok(path) = std::env::var("LEVI_BENCH_REPO") else {
+            return;
+        };
+        let root = std::path::PathBuf::from(path);
+        let shas: Vec<String> = crate::git::log(&root, Source::Log)
+            .unwrap()
+            .map(|c| c.unwrap().sha)
+            .collect();
+        for pattern in [
+            "xstrdup_or_null",
+            "git_parse_ssize_t",
+            "ODM_gear_nonexistent",
+        ] {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let searcher = crate::worker::CodeSearcher::new(root.clone(), tx);
+            let t = Instant::now();
+            searcher.start(CodeRequest {
+                pattern: pattern.into(),
+                shas: shas.clone(),
+                generation: 1,
+            });
+            let (mut hits, mut first) = (0, None);
+            loop {
+                match rx.recv().unwrap() {
+                    Msg::CodeHits(_, h) => {
+                        hits += h.len();
+                        first.get_or_insert(t.elapsed());
+                    }
+                    Msg::CodeDone(_, r) => {
+                        r.unwrap();
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            println!(
+                "{pattern:>22}: {hits:>5} commits, first {first:.2?}, all {:.2?}",
                 t.elapsed()
             );
         }

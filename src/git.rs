@@ -1,8 +1,9 @@
 //! Thin layer over the `git` CLI: repo discovery, streaming log, per-file diffs.
 
-use std::io::{BufRead, BufReader, ErrorKind, Read};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Output, Stdio};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, anyhow, bail};
 
@@ -313,6 +314,107 @@ fn parse_record(record: &[u8]) -> Result<Commit> {
         commit.files.push(change);
     }
     Ok(commit)
+}
+
+/// Commits whose diffs add or remove a line containing `pattern`, out of `shas`,
+/// each with the paths where that happens. Matching is literal; it ignores case
+/// unless the pattern has an uppercase letter. Kills git if dropped early.
+pub fn code_search(root: &Path, pattern: &str, shas: &[String]) -> Result<CodeStream> {
+    let mut cmd = git(root);
+    cmd.args([
+        "log",
+        "--no-color",
+        "--no-show-signature",
+        "--no-walk=unsorted",
+        "--stdin",
+        "--diff-merges=first-parent",
+        "--name-only",
+        "-z",
+        "--format=%x1e%H%x00",
+        "-G",
+        &literal_regex(pattern),
+    ]);
+    if !pattern.chars().any(char::is_uppercase) {
+        cmd.arg("--regexp-ignore-case");
+    }
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("failed to run git")?;
+    // A chunk of shas fits in the pipe buffer, so writing it all up front can't block.
+    let mut stdin = child.stdin.take().expect("stdin is piped");
+    for sha in shas {
+        writeln!(stdin, "{sha}")?;
+    }
+    drop(stdin);
+    let stdout = child.stdout.take().expect("stdout is piped");
+    Ok(CodeStream {
+        reader: BufReader::new(stdout),
+        buf: Vec::new(),
+        child: Arc::new(Mutex::new(child)),
+    })
+}
+
+/// Escapes POSIX extended regex syntax (what `-G` speaks) so `text` matches literally.
+fn literal_regex(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if r".[]()*+?{}|^$\".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// `(sha, paths)` for each matching commit, as git finds them.
+pub struct CodeStream {
+    reader: BufReader<ChildStdout>,
+    buf: Vec<u8>,
+    child: Arc<Mutex<Child>>,
+}
+
+impl CodeStream {
+    /// The git process, so another thread can kill it while this one is
+    /// blocked waiting for output.
+    pub fn process(&self) -> Arc<Mutex<Child>> {
+        self.child.clone()
+    }
+}
+
+impl Iterator for CodeStream {
+    type Item = (String, Vec<String>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            self.buf.clear();
+            if self.reader.read_until(RECORD_SEP, &mut self.buf).ok()? == 0 {
+                return None;
+            }
+            if self.buf.last() == Some(&RECORD_SEP) {
+                self.buf.pop();
+            }
+            let text = String::from_utf8_lossy(&self.buf);
+            let mut tokens = text
+                .split('\0')
+                .map(|t| t.trim_start_matches('\n'))
+                .filter(|t| !t.is_empty());
+            // The stream starts with a separator, so the first chunk is empty.
+            let Some(sha) = tokens.next() else { continue };
+            return Some((sha.to_owned(), tokens.map(str::to_owned).collect()));
+        }
+    }
+}
+
+impl Drop for CodeStream {
+    fn drop(&mut self) {
+        if let Ok(mut child) = self.child.lock() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 /// Unified diff of one file in one commit (merges: against the first parent).
@@ -663,5 +765,70 @@ mod tests {
         assert_eq!(reflog[0].reflog.as_ref().unwrap().selector, "HEAD@{0}");
         let lost = reflog.iter().find(|c| c.subject == "on side").unwrap();
         assert_eq!(lost.files, vec![change(Status::Added, "b")]);
+    }
+
+    fn code_hits(repo: &Repo, pattern: &str) -> Vec<(String, Vec<String>)> {
+        let shas: Vec<_> = repo.log().into_iter().map(|c| c.sha).collect();
+        code_search(repo.path(), pattern, &shas).unwrap().collect()
+    }
+
+    #[test]
+    fn code_search_is_literal_and_smart_case() {
+        let repo = Repo::new();
+        repo.write("a.rs", "fn main() {\n    let x = foo(1);\n}\n");
+        repo.write("b.txt", "a.b x[0] c\\d {} Upper ^$|+?*\n");
+        repo.commit("one");
+        repo.write("a.rs", "fn main() {\n    let x = bar(2);\n}\n");
+        repo.write("c.txt", "other\n");
+        repo.commit("two");
+        let log = repo.log();
+        let (two, one) = (&log[0].sha, &log[1].sha);
+
+        // Removing a line counts too, so `foo(` hits both commits, newest first.
+        let hits = code_hits(&repo, "foo(");
+        assert_eq!(
+            hits,
+            vec![
+                (two.clone(), vec!["a.rs".into()]),
+                (one.clone(), vec!["a.rs".into()])
+            ]
+        );
+        assert_eq!(
+            code_hits(&repo, "bar(2)"),
+            vec![(two.clone(), vec!["a.rs".into()])]
+        );
+        assert_eq!(
+            code_hits(&repo, "let x = b").len(),
+            1,
+            "spaces are part of the text"
+        );
+
+        for literal in ["a.b", "x[0]", "c\\d", "{}", "^$|+?*"] {
+            assert_eq!(
+                code_hits(&repo, literal),
+                vec![(one.clone(), vec!["b.txt".into()])],
+                "{literal}"
+            );
+        }
+        assert!(code_hits(&repo, "a.c").is_empty(), "`.` isn't a wildcard");
+
+        assert_eq!(code_hits(&repo, "upper").len(), 1, "lowercase ignores case");
+        assert!(code_hits(&repo, "UPPER").is_empty(), "uppercase is exact");
+        assert!(code_hits(&repo, "nowhere").is_empty());
+    }
+
+    #[test]
+    fn code_search_only_looks_at_given_commits() {
+        let repo = Repo::new();
+        repo.write("a", "needle\n");
+        repo.commit("one");
+        repo.write("a", "needle again\n");
+        repo.commit("two");
+        let log = repo.log();
+        let hits: Vec<_> = code_search(repo.path(), "needle", &[log[1].sha.clone()])
+            .unwrap()
+            .collect();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0, log[1].sha);
     }
 }

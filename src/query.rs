@@ -6,6 +6,8 @@
 //!
 //! Commands are whole words, so `src/config` or `/cache` stay fuzzy text.
 
+use std::ops::Range;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Source {
     #[default]
@@ -60,6 +62,34 @@ fn find_word(text: &str, word: &str) -> Option<usize> {
     })
 }
 
+/// Where code-search `pattern` occurs in `line`, as byte ranges, matching the way
+/// the search itself does: literally, ignoring case unless the pattern has an
+/// uppercase letter. (Case folding is ASCII-only, close enough for highlighting.)
+pub fn find_code(line: &str, pattern: &str) -> Vec<Range<usize>> {
+    let (hay, needle) = (line.as_bytes(), pattern.as_bytes());
+    if needle.is_empty() || needle.len() > hay.len() {
+        return Vec::new();
+    }
+    let ignore_case = !pattern.chars().any(char::is_uppercase);
+    let mut found = Vec::new();
+    let mut at = 0;
+    while at + needle.len() <= hay.len() {
+        let window = &hay[at..at + needle.len()];
+        let hit = if ignore_case {
+            window.eq_ignore_ascii_case(needle)
+        } else {
+            window == needle
+        };
+        if hit {
+            found.push(at..at + needle.len());
+            at += needle.len();
+        } else {
+            at += 1;
+        }
+    }
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,5 +139,14 @@ mod tests {
         assert_eq!(parse("src/config"), q("src/config", Source::Log, None));
         assert_eq!(parse("/cache /rust"), q("/cache /rust", Source::Log, None));
         assert_eq!(parse("a/r b/c"), q("a/r b/c", Source::Log, None));
+    }
+
+    #[test]
+    fn find_code_is_literal_with_smart_case() {
+        assert_eq!(find_code("let x = Foo(foo)", "foo"), vec![8..11, 12..15]);
+        assert_eq!(find_code("let x = Foo(foo)", "Foo"), vec![8..11]);
+        assert_eq!(find_code("a.b axb", "a.b"), vec![0..3]);
+        assert_eq!(find_code("ñandú ñ", "ñ"), vec![0..2, 8..10]);
+        assert!(find_code("short", "longer text").is_empty());
     }
 }
