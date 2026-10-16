@@ -597,11 +597,13 @@ mod tests {
     fn serve_code(app: &mut App, repo: &Repo) {
         let later = std::time::Instant::now() + crate::app::CODE_DEBOUNCE * 2;
         let req = app.take_code_request(later).expect("a code search is due");
-        let hits = git::code_search(repo.path(), &req.pattern, &req.shas)
-            .unwrap()
-            .collect();
+        let hits = crate::worker::search_now(repo.path(), &req);
         app.update(Msg::CodeHits(req.generation, hits));
         app.update(Msg::CodeDone(req.generation, Ok(())));
+    }
+
+    fn shas(req: &crate::app::CodeRequest) -> Vec<String> {
+        req.targets.iter().map(|t| t.sha.clone()).collect()
     }
 
     fn battlefield() -> Repo {
@@ -702,16 +704,14 @@ mod tests {
         type_str(&mut app, "README /c attack");
         let req = app.take_code_request(later()).unwrap();
         assert_eq!(
-            subjects(&app, &req.shas),
+            subjects(&app, &shas(&req)),
             ["docs", "walls"],
             "only README commits"
         );
         app.take_code_cancel();
 
         // Narrowing the fuzzy part keeps the results: no new search.
-        let hits = git::code_search(repo.path(), &req.pattern, &req.shas)
-            .unwrap()
-            .collect();
+        let hits = crate::worker::search_now(repo.path(), &req);
         app.update(Msg::CodeHits(req.generation, hits));
         app.update(Msg::CodeDone(req.generation, Ok(())));
         app.query = "README.md /c attack".into();
@@ -721,13 +721,13 @@ mod tests {
         // Widening it may need commits that weren't searched: search again.
         app.query = "e /c attack".into();
         let req = app.take_code_request(later()).unwrap();
-        assert_eq!(subjects(&app, &req.shas), ["docs", "expedition", "walls"]);
+        assert_eq!(subjects(&app, &shas(&req)), ["docs", "expedition", "walls"]);
 
         // With no fuzzy part, everything is searched, and any fuzzy text added
         // later reuses that.
         app.query = "/c attack".into();
         let req = app.take_code_request(later()).unwrap();
-        assert_eq!(req.shas.len(), 3);
+        assert_eq!(req.targets.len(), 3);
         app.query = "wall /c attack".into();
         assert!(app.take_code_request(later()).is_none());
     }
@@ -747,7 +747,7 @@ mod tests {
         let req = app
             .take_code_request(std::time::Instant::now() + crate::app::CODE_DEBOUNCE * 2)
             .unwrap();
-        assert_eq!(req.shas.len(), 2, "scoped to commits matching `w`");
+        assert_eq!(req.targets.len(), 2, "scoped to commits matching `w`");
     }
 
     #[test]
@@ -766,9 +766,7 @@ mod tests {
             "editing the pattern cancels the old search"
         );
         // The old search's results arrive late and are ignored.
-        let hits = git::code_search(repo.path(), &old.pattern, &old.shas)
-            .unwrap()
-            .collect();
+        let hits = crate::worker::search_now(repo.path(), &old);
         app.update(Msg::CodeHits(old.generation, hits));
         assert!(app.view.is_empty());
 
@@ -798,7 +796,7 @@ mod tests {
             "the list isn't complete yet"
         );
         app.update(Msg::LogDone(0, Ok(())));
-        assert_eq!(app.take_code_request(later).unwrap().shas.len(), 3);
+        assert_eq!(app.take_code_request(later).unwrap().targets.len(), 3);
     }
 
     #[test]
@@ -820,9 +818,56 @@ mod tests {
         let later = std::time::Instant::now() + crate::app::CODE_DEBOUNCE * 2;
         let code = app.take_code_request(later).unwrap();
         assert_eq!(
-            code.shas.len(),
+            code.targets.len(),
             3,
             "{entry_count} entries, 3 distinct commits"
+        );
+    }
+
+    #[test]
+    fn slash_c_diffs_only_the_files_the_fuzzy_part_matched() {
+        let repo = battlefield();
+        let mut app = loaded(&repo);
+        type_str(&mut app, "wall /c attack");
+        let req = app
+            .take_code_request(std::time::Instant::now() + crate::app::CODE_DEBOUNCE * 2)
+            .unwrap();
+        let by_subject = |subject: &str| {
+            let sha = &app
+                .commits
+                .iter()
+                .find(|c| c.subject == subject)
+                .unwrap()
+                .sha;
+            req.targets
+                .iter()
+                .find(|t| &t.sha == sha)
+                .unwrap()
+                .paths
+                .clone()
+        };
+        // `walls` matched by its subject: every file counts.
+        assert_eq!(by_subject("walls"), None);
+        // `expedition` matched through wall.md only: a.rs needn't be diffed.
+        assert_eq!(by_subject("expedition"), Some(vec!["wall.md".into()]));
+    }
+
+    #[test]
+    fn slash_c_scoped_to_a_renamed_file_keeps_the_rename() {
+        let repo = Repo::new();
+        repo.write("old_name.rs", "let needle = 1;\nother\nlines\nhere\n");
+        repo.commit("add");
+        repo.git(&["mv", "old_name.rs", "new_name.rs"]);
+        repo.commit("rename only");
+        let mut app = loaded(&repo);
+        // A pure rename adds or removes no line, so it must not match, even when
+        // only the new name is in the query.
+        type_str(&mut app, "new_name /c needle");
+        serve_code(&mut app, &repo);
+        assert!(
+            app.view
+                .iter()
+                .all(|h| app.commits[h.commit].subject != "rename only")
         );
     }
 }

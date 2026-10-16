@@ -155,9 +155,16 @@ and `/cache` stay fuzzy text; git paths never start with `/`.
   - git.git (82.5k commits, 12 cores): ~8.5 s for a full search vs ~55 s single-process; first
     hit for a common identifier in ~0.1 s; `parse /c …` (22.6k commits) ~3.2 s, `parse.c /c …`
     (2.7k commits) ~1.5 s. Cancelling kills all gits within 0.3 s.
+  - File-scoped: a commit the fuzzy query matched through its files is searched with a pathspec
+    of just those files (plus old names of renames, so git still pairs them — a pure rename
+    must not match). Commits matched by header are diffed whole. `plan_chunks` keeps the two
+    kinds in separate chunks; scoped chunks share the union of their paths, falling back to a
+    whole diff past 512 paths. Same visible results, since levi shows only fuzzy-matched files
+    anyway. git.git: `parse.c /c git_parse_ssize_t` 1.5 s → 0.16 s (big merges were the cost).
   - Measured and rejected: `-S` (2.3× faster, misses edited lines: 34 of 48 hits), scanning
     blobs ourselves via `cat-file --batch` (no faster, misses merges/moves), a bigger
-    `core.deltaBaseCacheLimit` (~4%), commit-graph (no change).
+    `core.deltaBaseCacheLimit` (~4%), commit-graph (no change), `--no-renames` (~3%), diff
+    prefetching (a diff opens in ~3 ms already), merging the preflight git calls (~4 ms).
 
 Each load has a generation number: switching source starts a new one, the old loader stops at its
 next commit (killing its git), and late messages from old generations are dropped.

@@ -7,6 +7,12 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+### Changed
+
+- When the rest of the query matched a commit through its file names, `/c` only diffs those
+  files. Big merges no longer cost a full diff: `parse.c /c git_parse_ssize_t` on git.git takes
+  about 0.16 seconds instead of 1.5, with the same results.
+
 ## [0.3.0] - 2026-10-16
 
 ### Changed

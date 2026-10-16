@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use ratatui::crossterm::event;
 
-use crate::app::{CodeRequest, DiffRequest, LogRequest, Msg};
+use crate::app::{CodeRequest, CodeTarget, DiffRequest, LogRequest, Msg};
 use crate::git::{self, Commit};
 use crate::query::Source;
 
@@ -248,17 +248,13 @@ impl CodeSearcher {
     pub fn start(&self, req: CodeRequest) {
         let CodeRequest {
             pattern,
-            shas,
+            targets,
             generation,
         } = req;
         self.cancel();
         self.current.store(generation, Ordering::SeqCst);
         let cores = thread::available_parallelism().map_or(1, |n| n.get());
-        let size = shas
-            .len()
-            .div_ceil(cores * CODE_CHUNKS_PER_CORE)
-            .clamp(1, CODE_CHUNK);
-        let chunks: VecDeque<Vec<String>> = shas.chunks(size).map(<[_]>::to_vec).collect();
+        let chunks: VecDeque<CodeChunk> = plan_chunks(targets, cores).into();
         let total = chunks.len();
         let queue = Arc::new(Mutex::new(chunks));
         let finished = Arc::new(AtomicUsize::new(0));
@@ -281,7 +277,8 @@ impl CodeSearcher {
                     if !live() {
                         return;
                     }
-                    let stream = match git::code_search(&root, &pattern, &chunk) {
+                    let paths = chunk.paths.as_deref();
+                    let stream = match git::code_search(&root, &pattern, &chunk.shas, paths) {
                         Ok(stream) => stream,
                         Err(e) => {
                             let _ = tx.send(Msg::CodeDone(generation, Err(e.to_string())));
@@ -313,6 +310,58 @@ impl CodeSearcher {
             });
         }
     }
+}
+
+/// Commits for one `git log -G`, and the files to diff (`None`: all of them).
+#[derive(Debug, PartialEq, Eq)]
+pub struct CodeChunk {
+    pub shas: Vec<String>,
+    pub paths: Option<Vec<String>>,
+}
+
+/// Paths in one chunk's pathspec, beyond which it diffs whole commits instead.
+const MAX_PATHSPEC: usize = 512;
+
+/// Cuts the targets into chunks. Commits searched whole and commits searched
+/// only in some files go in separate chunks; the latter diff just the union of
+/// their files, which skips most of a big merge.
+pub fn plan_chunks(targets: Vec<CodeTarget>, cores: usize) -> Vec<CodeChunk> {
+    let size = targets
+        .len()
+        .div_ceil(cores * CODE_CHUNKS_PER_CORE)
+        .clamp(1, CODE_CHUNK);
+    let (whole, scoped): (Vec<_>, Vec<_>) = targets.into_iter().partition(|t| t.paths.is_none());
+    let mut chunks: Vec<CodeChunk> = whole
+        .chunks(size)
+        .map(|group| CodeChunk {
+            shas: group.iter().map(|t| t.sha.clone()).collect(),
+            paths: None,
+        })
+        .collect();
+    for group in scoped.chunks(size) {
+        let mut paths: Vec<String> = group
+            .iter()
+            .flat_map(|t| t.paths.iter().flatten())
+            .cloned()
+            .collect();
+        paths.sort_unstable();
+        paths.dedup();
+        chunks.push(CodeChunk {
+            shas: group.iter().map(|t| t.sha.clone()).collect(),
+            paths: (paths.len() <= MAX_PATHSPEC).then_some(paths),
+        });
+    }
+    chunks
+}
+
+/// Runs a code search to completion on this thread, chunk by chunk, exactly as
+/// the searcher would.
+#[cfg(test)]
+pub fn search_now(root: &Path, req: &CodeRequest) -> Vec<(String, Vec<String>)> {
+    plan_chunks(req.targets.clone(), 3)
+        .iter()
+        .flat_map(|c| git::code_search(root, &req.pattern, &c.shas, c.paths.as_deref()).unwrap())
+        .collect()
 }
 
 /// Runs `git show` off the UI thread. Requests that pile up while one is running
@@ -382,6 +431,71 @@ mod tests {
             loaded.extend(batch.iter().map(key));
         }
         assert_eq!(loaded, expected);
+    }
+
+    fn target(sha: &str, paths: Option<&[&str]>) -> CodeTarget {
+        CodeTarget {
+            sha: sha.into(),
+            paths: paths.map(|p| p.iter().map(|s| s.to_string()).collect()),
+        }
+    }
+
+    #[test]
+    fn chunks_separate_whole_and_file_scoped_commits() {
+        let targets = vec![
+            target("a", None),
+            target("b", Some(&["x.rs", "y.rs"])),
+            target("c", None),
+            target("d", Some(&["y.rs", "z.rs"])),
+        ];
+        // Four targets on one core: four chunks of one, whole commits first.
+        let chunks = plan_chunks(targets, 1);
+        let kinds: Vec<_> = chunks
+            .iter()
+            .map(|c| (c.shas[0].as_str(), c.paths.is_some()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [("a", false), ("c", false), ("b", true), ("d", true)]
+        );
+
+        // Nine targets: chunks of three, scoped ones sharing a deduplicated pathspec.
+        let together = plan_chunks(
+            (0..8)
+                .map(|n| target(&n.to_string(), Some(&["x.rs", "y.rs"])))
+                .chain([target("w", None)])
+                .collect(),
+            1,
+        );
+        assert_eq!(
+            together,
+            vec![
+                CodeChunk {
+                    shas: vec!["w".into()],
+                    paths: None
+                },
+                CodeChunk {
+                    shas: (0..3).map(|n| n.to_string()).collect(),
+                    paths: Some(vec!["x.rs".into(), "y.rs".into()]),
+                },
+                CodeChunk {
+                    shas: (3..6).map(|n| n.to_string()).collect(),
+                    paths: Some(vec!["x.rs".into(), "y.rs".into()]),
+                },
+                CodeChunk {
+                    shas: (6..8).map(|n| n.to_string()).collect(),
+                    paths: Some(vec!["x.rs".into(), "y.rs".into()]),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn huge_pathspecs_fall_back_to_whole_commits() {
+        let paths: Vec<String> = (0..=MAX_PATHSPEC).map(|n| format!("f{n}")).collect();
+        let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+        let chunks = plan_chunks(vec![target("a", Some(&refs))], 1);
+        assert_eq!(chunks[0].paths, None);
     }
 
     #[test]

@@ -34,11 +34,20 @@ pub enum Msg {
     CodeDone(u64, Result<(), String>),
 }
 
-/// Search the diffs of `shas` for `pattern`. A higher generation supersedes the rest.
+/// Search the diffs of `targets` for `pattern`. A higher generation supersedes the rest.
 pub struct CodeRequest {
     pub pattern: String,
-    pub shas: Vec<String>,
+    pub targets: Vec<CodeTarget>,
     pub generation: u64,
+}
+
+/// A commit to search, and which of its files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeTarget {
+    pub sha: String,
+    /// The files the fuzzy query matched; `None` when the commit itself matched,
+    /// so every file counts.
+    pub paths: Option<Vec<String>>,
 }
 
 /// A `/c` search: what was asked and what has come back so far.
@@ -362,25 +371,14 @@ impl App {
         }
         let fuzzy = self.filter.query().to_owned();
         let all: Vec<usize> = (0..self.commits.len()).collect();
-        let candidates: Vec<usize> = if fuzzy.trim().is_empty() {
-            all
-        } else {
-            filter::par_matches(&fuzzy, &self.commits, &all)
-                .into_iter()
-                .map(|h| h.commit)
-                .collect()
-        };
+        let targets = code_targets(
+            &self.commits,
+            filter::par_matches(&fuzzy, &self.commits, &all),
+        );
         code.scope = Some(fuzzy);
-        let mut seen = HashSet::new();
-        let shas = candidates
-            .into_iter()
-            .map(|i| &self.commits[i].sha)
-            .filter(|sha| seen.insert(sha.as_str()))
-            .cloned()
-            .collect();
         Some(CodeRequest {
             pattern: code.pattern.clone(),
-            shas,
+            targets,
             generation: code.generation,
         })
     }
@@ -602,6 +600,32 @@ fn is_query_edit(key: &KeyEvent) -> bool {
     }
 }
 
+/// What a code search must look at for these fuzzy hits: each commit once, and
+/// only the files the fuzzy query matched, since no other file can show up.
+pub fn code_targets(commits: &[Commit], hits: Vec<Hit>) -> Vec<CodeTarget> {
+    let mut seen = HashSet::new();
+    hits.into_iter()
+        .filter(|h| seen.insert(commits[h.commit].sha.as_str()))
+        .map(|h| {
+            let commit = &commits[h.commit];
+            // Renames keep both names so git still pairs them.
+            let paths = h.files.map(|files| {
+                files
+                    .iter()
+                    .flat_map(|&i| {
+                        let f = &commit.files[i];
+                        std::iter::once(f.path.clone()).chain(f.old_path.clone())
+                    })
+                    .collect()
+            });
+            CodeTarget {
+                sha: commit.sha.clone(),
+                paths,
+            }
+        })
+        .collect()
+}
+
 /// Moves `idx` by `delta` within `0..len`, clamping at the ends.
 fn step(idx: usize, delta: isize, len: usize) -> usize {
     idx.saturating_add_signed(delta).min(len.saturating_sub(1))
@@ -727,12 +751,12 @@ mod bench {
             .map(Result::unwrap)
             .collect();
         let all: Vec<usize> = (0..commits.len()).collect();
-        let search = |pattern: &str, shas: Vec<String>| {
+        let search = |pattern: &str, targets: Vec<CodeTarget>| {
             let (tx, rx) = std::sync::mpsc::channel();
             let t = Instant::now();
             crate::worker::CodeSearcher::new(root.clone(), tx).start(CodeRequest {
                 pattern: pattern.into(),
-                shas,
+                targets,
                 generation: 1,
             });
             let (mut hits, mut first) = (0, None);
@@ -752,23 +776,20 @@ mod bench {
             (hits, first, t.elapsed())
         };
         for fuzzy in ["", "parse", "parse.c"] {
-            let scoped: Vec<String> = filter::par_matches(fuzzy, &commits, &all)
-                .into_iter()
-                .map(|h| commits[h.commit].sha.clone())
-                .collect();
+            let scoped = code_targets(&commits, filter::par_matches(fuzzy, &commits, &all));
             let n = scoped.len();
             let (hits, _, all) = search("git_parse_ssize_t", scoped);
             println!(
                 "{fuzzy:>8} /c git_parse_ssize_t: {n:>5} commits searched, {hits} hits, {all:.2?}"
             );
         }
-        let shas: Vec<String> = commits.iter().map(|c| c.sha.clone()).collect();
+        let everything = code_targets(&commits, filter::par_matches("", &commits, &all));
         for pattern in [
             "xstrdup_or_null",
             "git_parse_ssize_t",
             "ODM_gear_nonexistent",
         ] {
-            let (hits, first, all) = search(pattern, shas.clone());
+            let (hits, first, all) = search(pattern, everything.clone());
             println!("{pattern:>22}: {hits:>5} commits, first {first:.2?}, all {all:.2?}");
         }
     }

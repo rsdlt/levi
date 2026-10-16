@@ -397,8 +397,14 @@ fn parse_record(record: &[u8]) -> Result<Commit> {
 
 /// Commits whose diffs add or remove a line containing `pattern`, out of `shas`,
 /// each with the paths where that happens. Matching is literal; it ignores case
-/// unless the pattern has an uppercase letter. Kills git if dropped early.
-pub fn code_search(root: &Path, pattern: &str, shas: &[String]) -> Result<CodeStream> {
+/// unless the pattern has an uppercase letter. With `paths`, only those files are
+/// diffed. Kills git if dropped early.
+pub fn code_search(
+    root: &Path,
+    pattern: &str,
+    shas: &[String],
+    paths: Option<&[String]>,
+) -> Result<CodeStream> {
     let mut cmd = git(root);
     cmd.args([
         "log",
@@ -415,6 +421,9 @@ pub fn code_search(root: &Path, pattern: &str, shas: &[String]) -> Result<CodeSt
     ]);
     if !pattern.chars().any(char::is_uppercase) {
         cmd.arg("--regexp-ignore-case");
+    }
+    if let Some(paths) = paths {
+        cmd.arg("--").args(paths);
     }
     let mut child = cmd
         .stdin(Stdio::piped())
@@ -848,7 +857,9 @@ mod tests {
 
     fn code_hits(repo: &Repo, pattern: &str) -> Vec<(String, Vec<String>)> {
         let shas: Vec<_> = repo.log().into_iter().map(|c| c.sha).collect();
-        code_search(repo.path(), pattern, &shas).unwrap().collect()
+        code_search(repo.path(), pattern, &shas, None)
+            .unwrap()
+            .collect()
     }
 
     #[test]
@@ -904,10 +915,27 @@ mod tests {
         repo.write("a", "needle again\n");
         repo.commit("two");
         let log = repo.log();
-        let hits: Vec<_> = code_search(repo.path(), "needle", &[log[1].sha.clone()])
+        let hits: Vec<_> = code_search(repo.path(), "needle", &[log[1].sha.clone()], None)
             .unwrap()
             .collect();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].0, log[1].sha);
+    }
+
+    #[test]
+    fn code_search_can_diff_only_some_paths() {
+        let repo = Repo::new();
+        repo.write("a.rs", "needle\n");
+        repo.write("b.rs", "needle\n");
+        repo.commit("both");
+        let shas = vec![repo.log()[0].sha.clone()];
+        let only_b: Vec<_> = code_search(repo.path(), "needle", &shas, Some(&["b.rs".into()]))
+            .unwrap()
+            .collect();
+        assert_eq!(only_b, vec![(shas[0].clone(), vec!["b.rs".into()])]);
+        let neither: Vec<_> = code_search(repo.path(), "needle", &shas, Some(&["c.rs".into()]))
+            .unwrap()
+            .collect();
+        assert!(neither.is_empty());
     }
 }
