@@ -7,6 +7,8 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-16
+
 ### Added
 
 - The diff pane opens with the commit's header and full message, laid out like `git show`.
@@ -65,7 +67,8 @@ First release.
 - `--help` and `--version`.
 - `cargo deny` configuration for license, advisory and source checks.
 
-[Unreleased]: https://github.com/rsdlt/levi/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/rsdlt/levi/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/rsdlt/levi/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/rsdlt/levi/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/rsdlt/levi/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/rsdlt/levi/compare/v0.1.0...v0.2.0
