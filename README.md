@@ -10,6 +10,11 @@ carry gear he won't use.
 
 Named in honor of humanity's strongest soldier: **small, swift and precise.**
 
+*Why not tig or lazygit?* Those are full squads. Levi is one soldier, two blades and no small talk.
+
+Other tools show you a diff. Levi hunts down which commit put that line there. `/c` searches every
+diff on the branch, and he doesn't stop until he finds it.
+
 ```
 ┌ levi ───────────────────────────────────────────────────────────────────┐
 │> parse.rs█                                                               │
