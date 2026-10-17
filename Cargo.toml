@@ -1,5 +1,5 @@
 [package]
-name = "levi"
+name = "levi-git"
 version = "0.11.0"
 edition = "2024"
 description = "A git diff viewer: commits, their files and diffs, with fzf-style search"
@@ -7,6 +7,13 @@ license = "MIT"
 rust-version = "1.88"
 readme = "README.md"
 repository = "https://github.com/rsdlt/levi"
+keywords = ["git", "diff", "tui", "fuzzy", "terminal"]
+categories = ["command-line-utilities", "development-tools"]
+
+# The crate is levi-git (levi was taken on crates.io); the command is levi.
+[[bin]]
+name = "levi"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"

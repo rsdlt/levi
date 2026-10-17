@@ -36,10 +36,12 @@ above a full-width diff.
 Needs Rust 1.88+ and git 2.31+.
 
 ```sh
-cargo install --git https://github.com/rsdlt/levi
+cargo install levi-git
 ```
 
-Or from a clone: `cargo install --path .`
+The crate is `levi-git` because someone else got to `levi` first. The command is still `levi`.
+
+Or the latest from GitHub: `cargo install --git https://github.com/rsdlt/levi`
 
 ## Orders
 
