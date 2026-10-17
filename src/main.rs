@@ -9,13 +9,13 @@ mod worker;
 #[cfg(test)]
 mod testutil;
 
-use std::io::{self, Stderr};
+use std::io::{self, IsTerminal, Stderr};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Instant;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
@@ -99,7 +99,10 @@ fn try_main(rev: Option<String>) -> Result<Exit> {
     let mut app = App::new();
     app.rev = rev;
 
-    let mut terminal = init()?;
+    if !io::stderr().is_terminal() {
+        bail!("needs a terminal (it draws on stderr, which isn't one)");
+    }
+    let mut terminal = init().context("needs a terminal")?;
     let result = run(&mut terminal, &mut app, root);
     restore();
 

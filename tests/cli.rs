@@ -114,6 +114,18 @@ fn bad_revision() {
 }
 
 #[test]
+fn without_a_terminal() {
+    // `levi` runs here with stderr piped, like in a script or `2>file`.
+    let dir = repo_with_two_commits();
+    let out = levi(dir.path(), &[]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        stderr(&out),
+        "levi: needs a terminal (it draws on stderr, which isn't one)\n"
+    );
+}
+
+#[test]
 fn one_revision_at_most() {
     let dir = repo_with_two_commits();
     let out = levi(dir.path(), &["main", "src/"]);
