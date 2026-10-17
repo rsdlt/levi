@@ -9,6 +9,7 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ### Added
 
+- `levi -v` prints the version, like `-V` and `--version`.
 - Prebuilt binaries on every GitHub release: macOS (Apple Silicon and Intel), static Linux
   (x86_64 and ARM64) and Windows. `cargo binstall levi-git` downloads them too.
 

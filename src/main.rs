@@ -69,7 +69,8 @@ fn main() -> ExitCode {
             print!("{HELP}");
             return ExitCode::SUCCESS;
         }
-        [flag] if flag == "-V" || flag == "--version" => {
+        // levi has no verbose mode, so -v is free to mean version too.
+        [flag] if flag == "-V" || flag == "-v" || flag == "--version" => {
             println!("levi {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;
         }

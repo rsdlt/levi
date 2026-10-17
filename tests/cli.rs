@@ -63,12 +63,14 @@ fn help_and_version() {
     assert!(help.starts_with("levi — "));
     assert!(help.contains("Enter"));
 
-    let out = levi(dir.path(), &["-V"]);
-    assert!(out.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
-        format!("levi {}\n", env!("CARGO_PKG_VERSION"))
-    );
+    for flag in ["-V", "-v", "--version"] {
+        let out = levi(dir.path(), &[flag]);
+        assert!(out.status.success(), "{flag}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            format!("levi {}\n", env!("CARGO_PKG_VERSION"))
+        );
+    }
 }
 
 #[test]
