@@ -1,6 +1,6 @@
 [package]
 name = "levi-git"
-version = "0.11.2"
+version = "0.12.0"
 edition = "2024"
 description = "A git diff viewer: commits, their files and diffs, with fzf-style search"
 license = "MIT"
