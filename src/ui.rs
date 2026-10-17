@@ -110,8 +110,13 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
     let line = Line::from(vec![
         Span::styled("> ", Style::new().fg(ACCENT).bold()),
         Span::raw(&app.query),
-        Span::styled("█", Style::new().fg(ACCENT)),
     ]);
+    // The terminal's own cursor, after the query and inside the border, so it
+    // takes the user's cursor style and input methods know where typing goes.
+    if area.width > 2 && area.height > 2 {
+        let x = area.x + 1 + line.width() as u16;
+        frame.set_cursor_position((x.min(area.right() - 2), area.y + 1));
+    }
     let count = if app.filter.is_empty() && app.code.is_none() {
         app.commits.len().to_string()
     } else {
@@ -801,6 +806,21 @@ mod tests {
         println!("{screen}");
         assert!(app.diff_column > 0);
         assert!(screen.contains("the TAIL end"), "the match is in view");
+    }
+
+    #[test]
+    fn the_cursor_follows_the_query() {
+        let mut app = App::new();
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        type_str(&mut app, "tatakae");
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        // Past the border, "> " and the 7 letters.
+        assert_eq!(terminal.get_cursor_position().unwrap(), (10, 1).into());
+
+        // A query wider than the bar keeps it inside the border.
+        type_str(&mut app, &"x".repeat(50));
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        assert_eq!(terminal.get_cursor_position().unwrap(), (38, 1).into());
     }
 
     #[test]

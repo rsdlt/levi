@@ -7,6 +7,11 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+### Changed
+
+- The search bar uses the terminal's own cursor instead of drawing one, so it takes your cursor
+  style and input methods know where typing goes.
+
 ## [0.11.1] - 2026-10-17
 
 ### Changed
