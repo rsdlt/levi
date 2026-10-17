@@ -468,24 +468,53 @@ impl App {
         let Some(Ok(lines)) = self.diffs.get(&key) else {
             return;
         };
-        let first = lines.iter().enumerate().find_map(|(i, l)| {
-            if !matches!(l.kind, LineKind::Added | LineKind::Removed) {
-                return None;
-            }
-            let found = find_code(&l.text[1..], &code.pattern).into_iter().next()?;
-            // Back to `l.text` offsets, past the leading `+`/`-`.
-            Some((i, &l.text[..found.start + 1], &l.text[..found.end + 1]))
-        });
-        if let Some((i, before, through)) = first {
-            self.diff_scroll = i.saturating_sub(JUMP_CONTEXT);
-            // A match past the right edge is scrolled into view too.
-            self.diff_column = if self.diff_width > 0 && columns(through) > self.diff_width {
-                columns(before).saturating_sub(SIDE_STEP as usize)
-            } else {
-                0
-            };
+        let first = lines
+            .iter()
+            .enumerate()
+            .find_map(|(i, l)| Some((i, code_hit(l, &code.pattern)?)));
+        if let Some((i, (before, through))) = first {
+            self.show_code_hit(i, before, through);
         }
         self.jumped = Some(key);
+    }
+
+    /// Scrolls to diff line `i`, which has a code match taking up columns
+    /// `before..through`. A match past the right edge is scrolled into view too.
+    fn show_code_hit(&mut self, i: usize, before: usize, through: usize) {
+        self.diff_scroll = i.saturating_sub(JUMP_CONTEXT);
+        self.diff_column = if self.diff_width > 0 && through > self.diff_width {
+            before.saturating_sub(SIDE_STEP as usize)
+        } else {
+            0
+        };
+    }
+
+    /// Scrolls the diff to the next (`forward`) or previous hunk, or code match
+    /// while `/c` is on. Past the last one it stays put.
+    fn jump_in_diff(&mut self, forward: bool) {
+        let DiffView::Ready(lines) = self.diff() else {
+            return;
+        };
+        let pattern = self.code.as_ref().map(|c| c.pattern.as_str());
+        // Each stop with the scroll position that shows it.
+        let mut stops = lines.iter().enumerate().filter_map(|(i, l)| match pattern {
+            Some(pattern) => {
+                let hit = code_hit(l, pattern)?;
+                Some((i.saturating_sub(JUMP_CONTEXT), i, Some(hit)))
+            }
+            None => (l.kind == LineKind::Hunk).then_some((i, i, None)),
+        });
+        let current = self.diff_scroll;
+        let stop = if forward {
+            stops.find(|&(scroll, ..)| scroll > current)
+        } else {
+            stops.rfind(|&(scroll, ..)| scroll < current)
+        };
+        match stop {
+            Some((_, i, Some((before, through)))) => self.show_code_hit(i, before, through),
+            Some((scroll, ..)) => self.diff_scroll = scroll,
+            None => {}
+        }
     }
 
     /// The commit list to load, when the source changed.
@@ -583,6 +612,8 @@ impl App {
             KeyCode::Char('p') if ctrl => self.move_selection(-1),
             KeyCode::Char('d') if ctrl => self.scroll_diff(half_page),
             KeyCode::Char('u') if ctrl => self.scroll_diff(-half_page),
+            KeyCode::Down if shift => self.jump_in_diff(true),
+            KeyCode::Up if shift => self.jump_in_diff(false),
             KeyCode::Down => self.move_selection(1),
             KeyCode::Up => self.move_selection(-1),
             KeyCode::PageDown => self.scroll_diff(page),
@@ -701,6 +732,20 @@ impl App {
 /// Terminal columns `text` takes up.
 fn columns(text: &str) -> usize {
     Span::raw(text).width()
+}
+
+/// Where the first code match on a changed line starts and ends, in columns.
+fn code_hit(line: &DiffLine, pattern: &str) -> Option<(usize, usize)> {
+    if !matches!(line.kind, LineKind::Added | LineKind::Removed) {
+        return None;
+    }
+    let found = find_code(&line.text[1..], pattern).into_iter().next()?;
+    // Back to `line.text` offsets, past the leading `+`/`-`.
+    let text = &line.text;
+    Some((
+        columns(&text[..found.start + 1]),
+        columns(&text[..found.end + 1]),
+    ))
 }
 
 /// Keys that only change the query (see `handle_key`).

@@ -58,6 +58,7 @@ commits, so `/c` is faster too. `/r` still shows the whole reflog.
 | `↑` `↓`, `C-p` `C-n` | move in the focused pane |
 | `Tab` `S-Tab`, `←` `→` | switch pane: commits → files → diff |
 | `PgUp` `PgDn`, `C-u` `C-d` | scroll the diff |
+| `S-↑` `S-↓` | jump to the previous/next hunk, or `/c` match |
 | `S-←` `S-→` | scroll the diff sideways, for lines wider than the pane |
 | `Enter` | print the selected commit's sha and quit |
 | `Esc` | clear the search, or quit if it's empty |

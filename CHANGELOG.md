@@ -7,6 +7,11 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+### Added
+
+- Shift-↑/↓ jumps the diff to the previous or next hunk, from any pane. With `/c` on, it steps
+  through the matching lines instead, scrolling sideways when a match is past the edge.
+
 ## [0.10.0] - 2026-10-17
 
 ### Added

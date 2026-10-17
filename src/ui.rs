@@ -17,7 +17,7 @@ const ACCENT: Color = Color::Cyan;
 
 /// The bottom row's key hints, most useful first. Those that don't fit the
 /// terminal's width are dropped from the end.
-const HINTS: [(&str, &str); 8] = [
+const HINTS: [(&str, &str); 9] = [
     ("↑↓", "move"),
     ("enter", "pick"),
     ("/c", "search code"),
@@ -25,6 +25,7 @@ const HINTS: [(&str, &str); 8] = [
     ("tab", "pane"),
     ("esc", "clear/quit"),
     ("pgup/pgdn", "scroll"),
+    ("S-↑↓", "hunk"),
     ("S-←→", "sideways"),
 ];
 
@@ -722,6 +723,67 @@ mod tests {
         assert_eq!(app.diff_column, 0);
         shift(&mut app, KeyCode::Left);
         assert_eq!(app.diff_column, 0);
+    }
+
+    #[test]
+    fn shift_arrows_jump_between_hunks_and_matches() {
+        let repo = Repo::new();
+        let lines: Vec<String> = (1..=60).map(|n| format!("line {n}")).collect();
+        repo.write("a.rs", &(lines.join("\n") + "\n"));
+        repo.commit("plain");
+        let mut changed = lines.clone();
+        for n in [9, 29, 49] {
+            changed[n] = format!("attack {n}");
+        }
+        changed[30] = "attack again".into();
+        repo.write("a.rs", &(changed.join("\n") + "\n"));
+        repo.commit("three hunks");
+        let mut app = loaded(&repo);
+        serve_diffs(&mut app, &repo);
+        render(&mut app);
+        let DiffView::Ready(diff) = app.diff() else {
+            panic!("no diff");
+        };
+        let at = |kind: LineKind| -> Vec<usize> {
+            (0..diff.len()).filter(|&i| diff[i].kind == kind).collect()
+        };
+        let hunks = at(LineKind::Hunk);
+        let added = at(LineKind::Added);
+        assert_eq!((hunks.len(), added.len()), (3, 4));
+
+        let shift = |app: &mut App, code| {
+            let key = KeyEvent::new(code, KeyModifiers::SHIFT);
+            app.update(Msg::Input(Event::Key(key)));
+        };
+        // From the commit pane: hunk by hunk, staying put past the last one.
+        for &hunk in &hunks {
+            shift(&mut app, KeyCode::Down);
+            assert_eq!(app.diff_scroll, hunk);
+        }
+        shift(&mut app, KeyCode::Down);
+        assert_eq!(app.diff_scroll, hunks[2]);
+        assert_eq!(app.focus, Focus::Commits, "focus stays put");
+        assert!(render(&mut app).contains("@@ -47,7"), "the hunk is on top");
+        shift(&mut app, KeyCode::Up);
+        assert_eq!(app.diff_scroll, hunks[1]);
+        shift(&mut app, KeyCode::Up);
+        shift(&mut app, KeyCode::Up);
+        shift(&mut app, KeyCode::Up);
+        assert_eq!(app.diff_scroll, hunks[0], "and before the first");
+
+        // With `/c` on, the same keys step through the matching lines, each with
+        // a little context above it.
+        type_str(&mut app, "/c attack");
+        serve_code(&mut app, &repo);
+        serve_diffs(&mut app, &repo);
+        render(&mut app);
+        assert_eq!(app.diff_scroll, added[0] - 3, "the first match");
+        for &line in &added[1..] {
+            shift(&mut app, KeyCode::Down);
+            assert_eq!(app.diff_scroll, line - 3);
+        }
+        shift(&mut app, KeyCode::Up);
+        assert_eq!(app.diff_scroll, added[2] - 3);
     }
 
     #[test]

@@ -86,6 +86,7 @@ Details settled while building:
 | `↑/↓`, `C-p/C-n` | move in the focused column |
 | `Tab` / `S-Tab`, `←/→` | cycle focus a → b → c |
 | `PgUp/PgDn`, `C-u/C-d` | scroll the diff |
+| `S-↑/S-↓` | jump the diff to the previous/next `@@` hunk, putting it on top; with `/c` on, to the previous/next matching line instead, with 3 lines of context and sideways into view. Stops at the ends, works from any pane |
 | `S-←/S-→` | scroll the diff sideways, 8 columns (Alt-arrows would be word jumps in macOS terminals) |
 | `Enter` | print the selected sha to stdout and quit (`git checkout $(levi)`) |
 | `Esc` | clear the query, or quit if it's already empty |
