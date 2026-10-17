@@ -33,7 +33,13 @@ above a full-width diff.
 
 ## Enlist
 
-Needs Rust 1.88+ and git 2.31+.
+Needs git 2.31+.
+
+```sh
+brew install rsdlt/tap/levi
+```
+
+Or with Rust 1.88+:
 
 ```sh
 cargo install levi-git
