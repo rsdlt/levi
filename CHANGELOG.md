@@ -7,6 +7,8 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-17
+
 ### Added
 
 - Shift-↑/↓ jumps the diff to the previous or next hunk, from any pane. With `/c` on, it steps
@@ -115,7 +117,8 @@ First release.
 - `--help` and `--version`.
 - `cargo deny` configuration for license, advisory and source checks.
 
-[Unreleased]: https://github.com/rsdlt/levi/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/rsdlt/levi/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/rsdlt/levi/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/rsdlt/levi/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/rsdlt/levi/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/rsdlt/levi/compare/v0.7.0...v0.8.0
