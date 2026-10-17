@@ -17,8 +17,13 @@ Set TypingSpeed 70ms
 Set CursorBlink false
 
 # A clean prompt, this build of levi first on PATH, and no pager for git show.
+# It records a throwaway clone whose author emails are replaced, so no real
+# address ends up in the GIF.
 Hide
-Type `export PS1='$ ' PATH="$PWD/target/release:$PATH" GIT_PAGER=cat` Enter
+Type `export PS1='$ ' PATH="$PWD/target/release:$PATH" GIT_PAGER=cat FILTER_BRANCH_SQUELCH_WARNING=1` Enter
+Type `cd "$(mktemp -d)" && git clone -q "$OLDPWD" levi && cd levi` Enter
+Type `git filter-branch -f --env-filter 'export GIT_AUTHOR_EMAIL=levi@survey.corps GIT_COMMITTER_EMAIL=levi@survey.corps' HEAD >/dev/null 2>&1` Enter
+Sleep 8s
 Type "clear" Enter
 Show
 
@@ -43,7 +48,9 @@ Sleep 2.5s
 # /c finds the commit whose diff added or removed the text, and jumps to it.
 Escape
 Sleep 500ms
-Type "/c BUDGET"
+# Typed in two halves so this file isn't a match itself.
+Type "/c fn tok"
+Type "ens"
 Sleep 3.5s
 
 # Pick it: levi exits and git show takes the sha.
