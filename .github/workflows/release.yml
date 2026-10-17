@@ -1,0 +1,102 @@
+name: Release
+
+# Pushing a version tag builds levi for each platform and attaches the archives
+# to that tag's GitHub release, creating it from the CHANGELOG if needed.
+on:
+  push:
+    tags: ["v*"]
+  # Builds an existing tag again, e.g. one released before this workflow.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to build, like v0.11.2
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-15 }
+          - { target: x86_64-apple-darwin, os: macos-15 }
+          # musl links statically, so these run on any distro.
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-24.04 }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package
+        shell: bash
+        run: |
+          name="levi-${TAG#v}-${{ matrix.target }}"
+          mkdir "$name"
+          cp README.md LICENSE "$name"/
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            cp "target/${{ matrix.target }}/release/levi.exe" "$name"/
+            archive="$name.zip"
+            7z a -bd "$archive" "$name" > /dev/null
+          else
+            cp "target/${{ matrix.target }}/release/levi" "$name"/
+            archive="$name.tar.gz"
+            tar czf "$archive" "$name"
+          fi
+          if command -v sha256sum > /dev/null; then
+            sha256sum "$archive" > "$archive.sha256"
+          else
+            shasum -a 256 "$archive" > "$archive.sha256"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            levi-*.tar.gz*
+            levi-*.zip*
+
+  publish:
+    name: Attach to the release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ls -l dist
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            # The version's CHANGELOG section becomes the release notes.
+            awk -v v="${TAG#v}" '
+              index($0, "## [" v "]") == 1 { on = 1; next }
+              on && (/^## \[/ || /^\[.*\]: /) { exit }
+              on
+            ' CHANGELOG.md > notes.md
+            gh release create "$TAG" dist/* --verify-tag \
+              --title "levi ${TAG#v}" --notes-file notes.md
+          fi

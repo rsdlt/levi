@@ -17,6 +17,15 @@ categories = ["command-line-utilities", "development-tools"]
 name = "levi"
 path = "src/main.rs"
 
+# `cargo binstall levi-git` downloads the archives the release workflow builds.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/levi-{ version }-{ target }{ archive-suffix }"
+bin-dir = "levi-{ version }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
 [dependencies]
 anyhow = "1.0.104"
 nucleo-matcher = "0.3.1"

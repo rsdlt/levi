@@ -7,6 +7,11 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+### Added
+
+- Prebuilt binaries on every GitHub release: macOS (Apple Silicon and Intel), static Linux
+  (x86_64 and ARM64) and Windows. `cargo binstall levi-git` downloads them too.
+
 ## [0.11.2] - 2026-10-17
 
 ### Changed

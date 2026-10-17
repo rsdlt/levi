@@ -28,10 +28,15 @@ Needs git 2.31+.
 brew install rsdlt/tap/levi
 ```
 
+Or download a single binary from the [latest release](https://github.com/rsdlt/levi/releases/latest),
+built for macOS (Apple Silicon and Intel), Linux (x86_64 and ARM64, static, any distro) and
+Windows (built, not yet battle-tested). Unpack it and put `levi` somewhere on your `PATH`.
+
 Or with Rust 1.88+:
 
 ```sh
-cargo install levi-git
+cargo install levi-git     # builds from source
+cargo binstall levi-git    # or fetches the release binary
 ```
 
 The crate is `levi-git` because someone else got to `levi` first. The command is still `levi`.
