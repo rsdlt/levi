@@ -16,6 +16,11 @@
 
 Widths: ~25% / 20% / 55%. The diff pane gets the room because that's where reading happens.
 
+Below 120 columns (a split pane, a laptop half-screen) that leaves the diff too narrow to read, so
+the layout stacks: commits | files take the top 35% (55% / 45% of the width) and the diff gets the
+full width below. It follows the terminal's width on every frame; there's no toggle key, for the
+same reason as the hints below. Focus order and keys don't change.
+
 The bottom row lists key hints, `/c` and `/r` included, so nobody has to read `--help` to find
 them. They're ordered by usefulness; whatever doesn't fit the width is dropped from the end, never
 cut mid-hint. One row, always on: no toggle key, since every printable key belongs to the search.

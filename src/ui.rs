@@ -1,4 +1,5 @@
-//! Rendering: search bar on top, commits | files | diff below.
+//! Rendering: search bar on top, commits | files | diff below, or on narrow
+//! terminals commits | files above the diff.
 
 use std::ops::Range;
 
@@ -27,6 +28,10 @@ const HINTS: [(&str, &str); 8] = [
     ("S-←→", "sideways"),
 ];
 
+/// Below this many columns, three side-by-side panes leave the diff too
+/// narrow to read, so the lists go above it instead.
+const STACK_BELOW: u16 = 120;
+
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let [search, body, hints] = Layout::vertical([
         Constraint::Length(3),
@@ -34,12 +39,21 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Constraint::Length(1),
     ])
     .areas(frame.area());
-    let [commits, files, diff] = Layout::horizontal([
-        Constraint::Percentage(25),
-        Constraint::Percentage(20),
-        Constraint::Percentage(55),
-    ])
-    .areas(body);
+    let [commits, files, diff] = if body.width < STACK_BELOW {
+        let [lists, diff] =
+            Layout::vertical([Constraint::Percentage(35), Constraint::Percentage(65)]).areas(body);
+        let [commits, files] =
+            Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)])
+                .areas(lists);
+        [commits, files, diff]
+    } else {
+        Layout::horizontal([
+            Constraint::Percentage(25),
+            Constraint::Percentage(20),
+            Constraint::Percentage(55),
+        ])
+        .areas(body)
+    };
     app.panes = [commits, files, diff];
 
     draw_search(frame, app, search);
@@ -415,8 +429,12 @@ mod tests {
     };
 
     fn render(app: &mut App) -> String {
+        render_at(app, 120, 24)
+    }
+
+    fn render_at(app: &mut App, width: u16, height: u16) -> String {
         app.settle();
-        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal.draw(|f| draw(f, app)).unwrap();
         let buf = terminal.backend().buffer();
         let rows: Vec<String> = (0..buf.area.height)
@@ -525,7 +543,7 @@ mod tests {
 
         press(&mut app, KeyCode::Down);
         serve_diffs(&mut app, &repo);
-        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let buf = terminal.backend().buffer();
         let rows: Vec<String> = (0..buf.area.height)
@@ -620,6 +638,29 @@ mod tests {
     }
 
     #[test]
+    fn narrow_terminals_stack_the_lists_above_the_diff() {
+        let repo = titans();
+        let mut app = App::new();
+        app.update(Msg::Commits(0, repo.log()));
+        render(&mut app);
+        let [commits, files, diff] = app.panes;
+        assert!(
+            commits.y == diff.y && diff.x == files.right(),
+            "side by side when wide"
+        );
+
+        serve_diffs(&mut app, &repo);
+        let screen = render_at(&mut app, 90, 30);
+        println!("{screen}");
+        let [commits, files, diff] = app.panes;
+        assert_eq!((commits.y, files.y), (3, 3));
+        assert_eq!(files.x, commits.right());
+        assert_eq!((diff.x, diff.y, diff.width), (0, commits.bottom(), 90));
+        assert!(screen.contains("Author: Levi"), "the diff is drawn there");
+        assert_eq!(app.diff_width, 88);
+    }
+
+    #[test]
     fn long_lines_scroll_sideways() {
         let repo = Repo::new();
         let long = format!("let start = 1; {}// the TAIL end", "x".repeat(120));
@@ -703,7 +744,7 @@ mod tests {
     #[test]
     fn key_hints_fit_the_width() {
         let mut app = App::new();
-        let screen = render(&mut app);
+        let screen = render_at(&mut app, 100, 24);
         let bottom = screen.lines().last().unwrap();
         assert!(bottom.starts_with(" ↑↓ move  enter pick  /c search code  /r reflog  tab pane"));
         assert!(bottom.contains("pgup/pgdn scroll"));

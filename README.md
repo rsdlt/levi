@@ -23,6 +23,9 @@ Named in honor of humanity's strongest soldier: **small, swift and precise.**
  ↑↓ move  enter pick  /c search code  /r reflog  tab pane  esc clear/quit
 ```
 
+In a terminal narrower than 120 columns, like a split pane, commits and files sit side by side
+above a full-width diff.
+
 ## Enlist
 
 Needs Rust 1.88+ and git 2.31+.

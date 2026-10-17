@@ -7,6 +7,12 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+### Added
+
+- Narrow terminals (under 120 columns, like a split pane) stack commits and files above a
+  full-width diff instead of squeezing three columns side by side. It switches by itself as the
+  terminal resizes.
+
 ## [0.9.0] - 2026-10-16
 
 ### Added
