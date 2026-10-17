@@ -6,6 +6,8 @@ description = "A git diff viewer: commits, their files and diffs, with fzf-style
 license = "MIT"
 rust-version = "1.88"
 readme = "README.md"
+# The demo is for GitHub and crates.io pages, which load it from the repository.
+exclude = ["docs/demo.gif", "docs/demo.tape"]
 repository = "https://github.com/rsdlt/levi"
 keywords = ["git", "diff", "tui", "fuzzy", "terminal"]
 categories = ["command-line-utilities", "development-tools"]

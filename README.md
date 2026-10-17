@@ -8,25 +8,14 @@ A git diff viewer that does exactly one thing: browse the commits on your branch
 one touched, and their diffs, with fzf-style search on top. Nothing else. Captain Levi doesn't
 carry gear he won't use.
 
+![levi browsing its own history: fuzzy search, a diff with changed words marked, /c finding the commit that added a line, and Enter handing the sha to git show](docs/demo.gif)
+
 Named in honor of humanity's strongest soldier: **small, swift and precise.**
 
 *Why not tig or lazygit?* Those are full squads. Levi is one soldier, two blades and no small talk.
 
 Other tools show you a diff. Levi hunts down which commit put that line there. `/c` searches every
 diff on the branch, and he doesn't stop until he finds it.
-
-```
-┌ levi ───────────────────────────────────────────────────────────────────┐
-│> parse.rs█                                                               │
-└────────────────────────────────────────────────────────── 12/4567 commits┘
-┌ commits ───────────────┐┌ files ───────────┐┌ src/parse.rs ──────────────┐
-│a1b2c3d fix parser      ││M src/parse.rs    ││@@ -10,6 +10,8 @@           │
-│9f8e7d6 split tokenizer ││                  ││ fn parse(input: &str) {    │
-│...                     ││                  ││-    let x = 1;             │
-│                        ││                  ││+    let x = 2;             │
-└────────────────────────┘└──────────────────┘└────────────────────────────┘
- ↑↓ move  enter pick  /c search code  /r reflog  tab pane  esc clear/quit
-```
 
 In a terminal narrower than 120 columns, like a split pane, commits and files sit side by side
 above a full-width diff.
