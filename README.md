@@ -85,6 +85,9 @@ git show $(levi)
 sha=$(levi) && git revert "$sha"   # levi exits 130 if you quit without picking
 ```
 
+He respects [`NO_COLOR`](https://no-color.org): set it and he works in plain black and white,
+marking the selection and matches in reverse video.
+
 ## Hunting
 
 As you type, the commits and files columns narrow down together, like a squad closing in:

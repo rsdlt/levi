@@ -59,7 +59,7 @@ Keys:
   click               select a commit or file
   wheel               move a list, or scroll the diff
 
-Exits 130 when quit without picking a commit, like fzf.
+Exits 130 when quit without picking a commit, like fzf. Set NO_COLOR for no colors.
 ";
 
 fn main() -> ExitCode {
@@ -99,6 +99,7 @@ fn try_main(rev: Option<String>) -> Result<Exit> {
     let root = git::preflight(&std::env::current_dir()?, rev.as_deref())?;
     let mut app = App::new();
     app.rev = rev;
+    app.no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
 
     if !io::stderr().is_terminal() {
         bail!("needs a terminal (it draws on stderr, which isn't one)");

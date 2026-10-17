@@ -176,6 +176,8 @@ pub struct App {
     /// The revision levi was started with, if not the current branch. The
     /// reflog ignores it.
     pub rev: Option<String>,
+    /// Draw without colors, for `NO_COLOR` (https://no-color.org).
+    pub no_color: bool,
     /// The running or finished `/c` search, if the query has one.
     pub code: Option<CodeSearch>,
     pub focus: Focus,
@@ -224,6 +226,7 @@ impl App {
             query: String::new(),
             source: Source::Log,
             rev: None,
+            no_color: false,
             code: None,
             focus: Focus::Commits,
             commit_idx: 0,

@@ -12,6 +12,7 @@ the search commands, the sha printed on stdout and the exit codes.
 - `levi -v` prints the version, like `-V` and `--version`.
 - Without a terminal, as in a script, levi says it needs one instead of failing with an OS error.
 - `Ctrl-W` deletes the last word of the query, as in a shell.
+- `NO_COLOR` turns colors off. The selection and code matches show in reverse video instead.
 - Prebuilt binaries on every GitHub release: macOS (Apple Silicon and Intel), static Linux
   (x86_64 and ARM64) and Windows. `cargo binstall levi-git` downloads them too.
 

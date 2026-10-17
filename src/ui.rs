@@ -4,6 +4,7 @@
 use std::ops::Range;
 
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
@@ -62,6 +63,21 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_files(frame, app, files);
     draw_diff(frame, app, diff);
     draw_hints(frame, hints);
+    if app.no_color {
+        strip_colors(frame.buffer_mut());
+    }
+}
+
+/// Drops every color. What a background color marked, like the selection or a
+/// code match, is shown in reverse video instead, so it still stands out.
+fn strip_colors(buf: &mut Buffer) {
+    for cell in &mut buf.content {
+        if cell.bg != Color::Reset {
+            cell.modifier.insert(Modifier::REVERSED);
+        }
+        cell.fg = Color::Reset;
+        cell.bg = Color::Reset;
+    }
 }
 
 fn draw_hints(frame: &mut Frame, area: Rect) {
@@ -821,6 +837,37 @@ mod tests {
         type_str(&mut app, &"x".repeat(50));
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         assert_eq!(terminal.get_cursor_position().unwrap(), (38, 1).into());
+    }
+
+    #[test]
+    fn no_color_keeps_the_marks_without_colors() {
+        let repo = battlefield();
+        let mut app = loaded(&repo);
+        app.no_color = true;
+        type_str(&mut app, "/c attack");
+        serve_code(&mut app, &repo);
+        serve_diffs(&mut app, &repo);
+        render(&mut app);
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(
+            buf.content
+                .iter()
+                .all(|c| c.fg == Color::Reset && c.bg == Color::Reset)
+        );
+        // The selected commit and the code match are in reverse video.
+        let reversed = |text: &str| {
+            let y = (0..buf.area.height)
+                .find(|&y| {
+                    let row: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+                    row.contains(text)
+                })
+                .unwrap();
+            (0..buf.area.width).any(|x| buf[(x, y)].modifier.contains(Modifier::REVERSED))
+        };
+        assert!(reversed("expedition"));
+        assert!(reversed("+attack titan"));
     }
 
     #[test]

@@ -163,13 +163,16 @@ All five steps are done.
 - `levi [revision]`: one optional revision (`main..HEAD`, `v1.0..`, a branch), handed to
   `git rev-list --end-of-options <rev> --`, which feeds the parallel loader in place of `HEAD`.
   `--` keeps git from reading it as a path, so `levi src/` is a bad revision rather than a path
-  filter (typing `src/` already filters by path). `-h/--help` and `-V/--version` aside,
+  filter (typing `src/` already filters by path). `-h/--help` and `-V/-v/--version` aside,
   arguments starting with `-` and any second argument exit 2.
 - `/r` ignores the revision: the reflog is every place HEAD has been, not a commit range. The
   status line names the revision (`12 commits in main..HEAD`) only outside the reflog.
 - Before the TUI starts, a preflight check fails with a one-line `levi: …` on stderr (exit 1):
   `git not found in PATH`, `needs git 2.31 or newer`, `not inside a git repository`, `no commits yet`,
   and with a revision `bad revision '<rev>'` or `no commits in '<rev>'` (an empty range).
+  Then, since the UI draws on stderr, `needs a terminal` when stderr isn't one (scripts, `2>file`).
+- `NO_COLOR` (non-empty, per no-color.org) drops every color after each frame is drawn; cells
+  that had a background (selection, code matches) get reverse video so they still stand out.
 - Bare repositories work (commands run from the bare dir instead of a work tree's top level).
 - Exit codes: 0 with a picked sha on stdout, 130 when quit without picking (like fzf), so
   `sha=$(levi) && git show "$sha"` stops cleanly.
