@@ -927,6 +927,24 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_w_deletes_the_last_word() {
+        let mut app = App::new();
+        let ctrl_w = |app: &mut App| {
+            let key = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL);
+            app.update(Msg::Input(Event::Key(key)));
+        };
+        type_str(&mut app, "parse.rs /c let x  ");
+        ctrl_w(&mut app);
+        assert_eq!(app.query, "parse.rs /c let ");
+        ctrl_w(&mut app);
+        ctrl_w(&mut app);
+        assert_eq!(app.query, "parse.rs ");
+        ctrl_w(&mut app);
+        ctrl_w(&mut app);
+        assert_eq!(app.query, "", "and nothing breaks on an empty query");
+    }
+
+    #[test]
     fn streaming_keeps_selection_under_a_query() {
         let repo = titans();
         let mut log = repo.log();

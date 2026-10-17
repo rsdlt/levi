@@ -53,6 +53,7 @@ Keys:
   S-↑/S-↓             jump to the previous/next hunk, or /c match
   S-←/S-→             scroll the diff sideways
   Enter               print the selected sha and quit:  git show $(levi)
+  C-w                 delete the last word of the query
   Esc                 clear the query, or quit
   C-c                 quit
   click               select a commit or file

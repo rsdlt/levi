@@ -89,6 +89,7 @@ Details settled while building:
 | `S-↑/S-↓` | jump the diff to the previous/next `@@` hunk, putting it on top; with `/c` on, to the previous/next matching line instead, with 3 lines of context and sideways into view. Stops at the ends, works from any pane |
 | `S-←/S-→` | scroll the diff sideways, 8 columns (Alt-arrows would be word jumps in macOS terminals) |
 | `Enter` | print the selected sha to stdout and quit (`git checkout $(levi)`) |
+| `C-w` | delete the query's last word and the spaces after it, as in a shell (`C-u` can't clear the line: it scrolls the diff) |
 | `Esc` | clear the query, or quit if it's already empty |
 | `C-c` | quit |
 | click | select a commit/file and focus its pane; focus the diff |

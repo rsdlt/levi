@@ -632,6 +632,14 @@ impl App {
             KeyCode::Backspace => {
                 self.query.pop();
             }
+            KeyCode::Char('w') if ctrl => {
+                // Like a shell: the last word and the spaces after it.
+                let kept = self
+                    .query
+                    .trim_end()
+                    .trim_end_matches(|c: char| !c.is_whitespace());
+                self.query.truncate(kept.len());
+            }
             KeyCode::Char(c) if !ctrl => self.query.push(c),
             _ => {}
         }
@@ -751,6 +759,7 @@ fn code_hit(line: &DiffLine, pattern: &str) -> Option<(usize, usize)> {
 /// Keys that only change the query (see `handle_key`).
 fn is_query_edit(key: &KeyEvent) -> bool {
     match key.code {
+        KeyCode::Char('w') => true,
         KeyCode::Char(_) => !key.modifiers.contains(KeyModifiers::CONTROL),
         KeyCode::Backspace | KeyCode::Esc => true,
         _ => false,
