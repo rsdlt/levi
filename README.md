@@ -14,7 +14,7 @@ levi browses the commits on your branch, the files each one touched, and their d
 search commits and files fzf style, and add `/c` to search the code itself: levi finds the
 commit that added or removed any line you name.
 
-![levi browsing its own history: a fuzzy search, a diff in syntax colors with tinted changes, Ctrl-Y copying a sha, /c finding the commit that added a line, Ctrl-O opening it in Neovim, Enter printing the sha, and levi --filter running the same search without the TUI](docs/demo.gif)
+![levi browsing its own history: a fuzzy search, a diff in syntax colors with tinted changes, Ctrl-Y copying a sha, /c finding the commit that added a line, Ctrl-O opening it in Neovim, Enter printing the sha, levi --filter running the same search without the TUI, and in herdr, a pick landing in an agent's input](docs/demo.gif)
 
 ## Why levi
 

@@ -32,7 +32,10 @@ After upgrading dependencies (`cargo update`, or `cargo upgrade` for major versi
 `sh docs/demo.sh` rebuilds `docs/demo.gif`: it records `docs/demo.tape` with
 [vhs](https://github.com/charmbracelet/vhs), renders the title card `docs/demo-card.svg`
 (which takes `docs/logo.svg`), and joins them with ffmpeg. It needs vhs, rsvg-convert and
-ffmpeg, and a full clone, since the demo browses levi's own history.
+ffmpeg, and a full clone, since the demo browses levi's own history. The last part runs the
+herdr plugin in a herdr session of its own, `levi-demo`, removed at the end, with a stand-in
+agent (`docs/demo-agent.sh`) that never answers; so it also needs herdr with the plugin linked
+and `prefix+l` bound to `rsdlt.levi.pick`.
 
 ## Design
 
