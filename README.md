@@ -193,7 +193,7 @@ end, { desc = "levi: browse commits" })
   while you're already browsing, and diffs load in the background. git.git, with 82k commits,
   is his Beast Titan. The first screen lands in 40 ms, the whole history in under a second,
   and every search takes 5–12 ms, so it's over before the boulders start flying.
-- **Small.** About 2,300 lines of Rust (not counting tests, comments or blank lines) and a
+- **Small.** About 3,200 lines of Rust (not counting tests, comments or blank lines) and a
   1.6 MB binary. Short, and still the strongest.
 - **Relentless.** `/c` hunts through every diff in history on every core at once, and stops
   the moment you change your mind.
