@@ -4,7 +4,7 @@ use std::collections::{HashMap, VecDeque};
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::process::Child;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -22,9 +22,55 @@ const BATCH_SIZE: usize = 512;
 /// ...but never hold commits back longer than a frame.
 const BATCH_INTERVAL: Duration = Duration::from_millis(16);
 
-pub fn spawn_input(tx: Sender<Msg>) {
+/// The thread reading keys and the mouse, which can stand aside while another
+/// program, like an editor, has the terminal.
+pub struct Input {
+    paused: Arc<AtomicBool>,
+    /// Set by the thread once it has seen `paused` and stopped reading.
+    parked: Arc<AtomicBool>,
+}
+
+impl Input {
+    /// Stops reading the terminal, returning once nothing is being read, so
+    /// whatever runs next gets every key.
+    pub fn pause(&self) {
+        self.paused.store(true, Ordering::SeqCst);
+        while !self.parked.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    pub fn resume(&self) {
+        // Cleared here, not by the thread, so a quick pause() after this
+        // can't take a stale `parked` for the real thing.
+        self.parked.store(false, Ordering::SeqCst);
+        self.paused.store(false, Ordering::SeqCst);
+    }
+}
+
+pub fn spawn_input(tx: Sender<Msg>) -> Input {
+    let paused = Arc::new(AtomicBool::new(false));
+    let parked = Arc::new(AtomicBool::new(false));
+    let input = Input {
+        paused: paused.clone(),
+        parked: parked.clone(),
+    };
     thread::spawn(move || {
-        while let Ok(ev) = event::read() {
+        loop {
+            if paused.load(Ordering::SeqCst) {
+                parked.store(true, Ordering::SeqCst);
+                thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+            // Wait for input in short spells, to notice a pause in between.
+            match event::poll(Duration::from_millis(100)) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(_) => break,
+            }
+            let Ok(ev) = event::read() else {
+                break;
+            };
             // Mouse capture reports every movement; only clicks, the wheel and
             // left-button drags (to select) matter, and the rest would each
             // cost a redraw.
@@ -42,6 +88,7 @@ pub fn spawn_input(tx: Sender<Msg>) {
             }
         }
     });
+    input
 }
 
 /// Loads the commit list in the background, one source at a time.

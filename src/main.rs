@@ -1,5 +1,6 @@
 mod app;
 mod clipboard;
+mod editor;
 mod filter;
 mod git;
 mod query;
@@ -11,7 +12,7 @@ mod worker;
 mod testutil;
 
 use std::io::{self, IsTerminal, Stderr, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Instant;
@@ -56,6 +57,8 @@ Keys:
   S-←/S-→             scroll the diff sideways
   Enter               print the selected sha and quit:  git show $(levi)
   C-y                 copy the selected commit's sha
+  C-o                 open the file in $EDITOR at the line on top of the diff
+                      (in Neovim's terminal: a new tab in that Neovim)
   C-w                 delete the last word of the query
   Esc                 clear the query, or quit
   C-c                 quit
@@ -213,11 +216,11 @@ fn try_main(rev: Option<String>) -> Result<Exit> {
 
 fn run(terminal: &mut Tui, app: &mut App, root: PathBuf) -> Result<()> {
     let (tx, rx) = mpsc::channel();
-    worker::spawn_input(tx.clone());
+    let input = worker::spawn_input(tx.clone());
     let rev = app.rev.clone().unwrap_or_else(|| "HEAD".into());
     let logs = worker::LogLoader::new(root.clone(), rev, tx.clone());
     let code = worker::CodeSearcher::new(root.clone(), tx.clone());
-    let diffs = worker::spawn_diff(root, tx);
+    let diffs = worker::spawn_diff(root.clone(), tx);
 
     while app.exit.is_none() {
         if let Some(req) = app.take_log_request() {
@@ -234,6 +237,10 @@ fn run(terminal: &mut Tui, app: &mut App, root: PathBuf) -> Result<()> {
         }
         if let Some(text) = app.take_clipboard() {
             clipboard::copy(&text);
+        }
+        if let Some((path, line)) = app.take_open() {
+            let said = open(terminal, &input, &root, &path, line);
+            app.notice = (!said.is_empty()).then_some(said);
         }
         terminal.draw(|frame| ui::draw(frame, app))?;
         // Sleep until something happens, or until a pending code search is due.
@@ -256,6 +263,34 @@ fn run(terminal: &mut Tui, app: &mut App, root: PathBuf) -> Result<()> {
     Ok(())
 }
 
+/// Opens `path` (relative to `root`) at `line` and says how it went. In the
+/// Neovim levi runs inside, that's a new tab there; otherwise the editor gets
+/// the terminal until it quits, and levi carries on where it was.
+fn open(terminal: &mut Tui, input: &worker::Input, root: &Path, path: &str, line: usize) -> String {
+    let file = root.join(path);
+    if !file.is_file() {
+        return format!("{path} isn't in the working tree");
+    }
+    if let Some(server) = editor::host_nvim() {
+        return match editor::open_in_nvim(&server, &file, line) {
+            Ok(()) => format!("opened {path}:{line} in a Neovim tab"),
+            Err(e) => format!("{e:#}"),
+        };
+    }
+    let editor = editor::editor();
+    input.pause();
+    restore();
+    let status = editor::command(&editor, root, path, line).status();
+    let back = enter().and_then(|()| Ok(terminal.clear()?));
+    input.resume();
+    match (status, back) {
+        (_, Err(e)) => format!("couldn't take the terminal back: {e:#}"),
+        (Ok(s), _) if s.success() => String::new(),
+        (Ok(s), _) => format!("{editor} exited with {s}"),
+        (Err(e), _) => format!("couldn't run {editor}: {e}"),
+    }
+}
+
 /// Draws on stderr so stdout stays free for the picked sha: `git checkout $(levi)`.
 fn init() -> Result<Tui> {
     let hook = std::panic::take_hook();
@@ -263,9 +298,15 @@ fn init() -> Result<Tui> {
         restore();
         hook(info);
     }));
+    enter()?;
+    Ok(Terminal::new(CrosstermBackend::new(io::stderr()))?)
+}
+
+/// Takes the terminal over: raw mode, the alternate screen and the mouse.
+fn enter() -> Result<()> {
     enable_raw_mode()?;
     execute!(io::stderr(), EnterAlternateScreen, EnableMouseCapture)?;
-    Ok(Terminal::new(CrosstermBackend::new(io::stderr()))?)
+    Ok(())
 }
 
 fn restore() {

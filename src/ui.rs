@@ -18,7 +18,7 @@ const ACCENT: Color = Color::Cyan;
 
 /// The bottom row's key hints, most useful first. Those that don't fit the
 /// terminal's width are dropped from the end.
-const HINTS: [(&str, &str); 10] = [
+const HINTS: [(&str, &str); 11] = [
     ("↑↓", "move"),
     ("enter", "pick"),
     ("/c", "search code"),
@@ -26,6 +26,7 @@ const HINTS: [(&str, &str); 10] = [
     ("tab", "pane"),
     ("esc", "clear/quit"),
     ("C-y", "copy sha"),
+    ("C-o", "open"),
     ("pgup/pgdn", "scroll"),
     ("S-↑↓", "hunk"),
     ("S-←→", "sideways"),
@@ -1170,6 +1171,78 @@ mod tests {
         assert_eq!((app.file_idx, app.diff_scroll), (0, a_hunks[1]));
         shift(&mut app, KeyCode::Up);
         assert_eq!(app.diff_scroll, a_hunks[0]);
+    }
+
+    #[test]
+    fn diff_lines_map_to_lines_of_the_new_file() {
+        use crate::app::line_at;
+        let diff: Vec<DiffLine> = [
+            (LineKind::Meta, "commit 1234"),
+            (LineKind::Header, "diff --git a/x b/x"),
+            (LineKind::Hunk, "@@ -10,4 +12,5 @@ fn x()"),
+            (LineKind::Context, " a"),
+            (LineKind::Removed, "-b"),
+            (LineKind::Added, "+c"),
+            (LineKind::Added, "+d"),
+            (LineKind::Context, " e"),
+            (LineKind::Hunk, "@@ -40,2 +43,2 @@"),
+            (LineKind::Context, " f"),
+        ]
+        .into_iter()
+        .map(|(kind, text)| DiffLine {
+            kind,
+            text: text.into(),
+            emph: Vec::new(),
+        })
+        .collect();
+        let at = |top| line_at(&diff, top);
+        assert_eq!(at(0), Some(12), "above the first hunk: its first line");
+        assert_eq!(
+            (at(3), at(4), at(5), at(6), at(7)),
+            (Some(12), Some(13), Some(13), Some(14), Some(15))
+        );
+        assert_eq!((at(8), at(9)), (Some(43), Some(43)));
+        assert_eq!(at(50), Some(43), "past the end: the last line");
+        assert_eq!(line_at(&diff[..2], 0), None, "no hunks");
+    }
+
+    #[test]
+    fn ctrl_o_asks_to_open_the_file_at_the_line_on_top() {
+        let repo = Repo::new();
+        let lines: Vec<String> = (1..=40).map(|n| format!("line {n}")).collect();
+        repo.write("src/a.rs", &(lines.join("\n") + "\n"));
+        repo.commit("plain");
+        let mut changed = lines.clone();
+        changed[29] = "attack".into();
+        repo.write("src/a.rs", &(changed.join("\n") + "\n"));
+        repo.commit("change line 30");
+        repo.git(&["commit", "-q", "--allow-empty", "-m", "nothing"]);
+        let mut app = loaded(&repo);
+        serve_diffs(&mut app, &repo);
+        let ctrl_o = |app: &mut App| {
+            let key = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
+            app.update(Msg::Input(Event::Key(key)));
+        };
+        // A commit without files has nothing to open.
+        ctrl_o(&mut app);
+        assert_eq!(app.take_open(), None);
+        assert_eq!(app.notice.as_deref(), Some("no file to open"));
+
+        press(&mut app, KeyCode::Down);
+        serve_diffs(&mut app, &repo);
+        // At the top of the diff, the hunk's first line: 3 of context before 30.
+        ctrl_o(&mut app);
+        assert_eq!(app.take_open(), Some(("src/a.rs".into(), 27)));
+        // Scrolled to the change itself.
+        app.diff_scroll = {
+            let DiffView::Ready(diff) = app.diff() else {
+                panic!("no diff");
+            };
+            diff.iter().position(|l| l.text == "+attack").unwrap()
+        };
+        ctrl_o(&mut app);
+        assert_eq!(app.take_open(), Some(("src/a.rs".into(), 30)));
+        assert_eq!(app.query, "", "not typed into the search");
     }
 
     #[test]

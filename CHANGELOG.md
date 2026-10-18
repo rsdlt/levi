@@ -13,6 +13,10 @@ the search commands, the sha printed on stdout and the exit codes.
   prints `<sha> <subject>` per match, best first. For scripts and coding agents: the full query
   syntax, `/c` and `/r` included. It exits 1 when nothing matches.
 
+- `Ctrl-O` opens the selected file in your editor at the line you're reading, and levi carries on
+  when you quit. Inside Neovim's terminal it opens in a new tab of that Neovim instead of nesting
+  one. `$VISUAL`, then `$EDITOR`, then `vi`; Helix, Zed, Sublime and VS Code get the line their way.
+
 ### Changed
 
 - `Shift-↑/↓` hunk jumps carry on across files: past a file's last hunk, the next file opens at
