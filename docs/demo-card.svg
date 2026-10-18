@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1400 780" width="1400" height="780">
+  <!-- The demo GIF's title card; docs/demo.sh renders it and puts it in front of the recording. -->
+  <rect width="1400" height="780" fill="#14161e"/>
+  <image x="580" y="165" width="240" height="240" xlink:href="logo.svg"/>
+  <g font-family="JetBrains Mono, Menlo, monospace" text-anchor="middle">
+    <text x="700" y="495" font-size="72" font-weight="700" fill="#c0caf5">levi</text>
+    <text x="700" y="565" font-size="28" fill="#9aa5ce">The fastest blade for your git history.</text>
+    <text x="700" y="607" font-size="28" fill="#9aa5ce">Fuzzy search for you, plain text for your agents.</text>
+  </g>
+</svg>

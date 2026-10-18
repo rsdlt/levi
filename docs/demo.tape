@@ -1,10 +1,9 @@
-# The README's demo. Regenerate it from the repository root with:
-#
-#   cargo build --release && vhs docs/demo.tape
+# The terminal part of the README's demo. docs/demo.sh records it, puts the
+# title card in front and writes docs/demo.gif; run that instead.
 #
 # It browses levi's own history, so it needs a full clone.
 
-Output docs/demo.gif
+Output target/demo-terminal.gif
 
 Set Shell "bash"
 Set FontSize 15

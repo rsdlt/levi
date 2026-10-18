@@ -27,6 +27,13 @@ After upgrading dependencies (`cargo update`, or `cargo upgrade` for major versi
 5. Run `cargo publish`, then `cargo clean -p levi-git`: the publish check leaves cargo's
    fingerprint pointing at the packaged copy, and later local builds would reuse a stale binary.
 
+## The demo
+
+`sh docs/demo.sh` rebuilds `docs/demo.gif`: it records `docs/demo.tape` with
+[vhs](https://github.com/charmbracelet/vhs), renders the title card `docs/demo-card.svg`
+(which takes `docs/logo.svg`), and joins them with ffmpeg. It needs vhs, rsvg-convert and
+ffmpeg, and a full clone, since the demo browses levi's own history.
+
 ## Design
 
 [docs/plan.md](docs/plan.md) records how levi works and why: the decisions, the search
