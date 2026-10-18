@@ -20,7 +20,8 @@ Set CursorBlink false
 # It records a throwaway clone whose author emails are replaced, so no real
 # address ends up in the GIF.
 Hide
-Type `export PS1='$ ' PATH="$PWD/target/release:$PATH" GIT_PAGER=cat FILTER_BRANCH_SQUELCH_WARNING=1` Enter
+# truecolor, so levi asks for the background and tints changed lines.
+Type `export PS1='$ ' PATH="$PWD/target/release:$PATH" COLORTERM=truecolor FILTER_BRANCH_SQUELCH_WARNING=1` Enter
 # Ctrl-O's editor: a plain Neovim with line numbers, nobody's own config.
 Type `export VISUAL= EDITOR="nvim --clean -c 'set number'" && unset NVIM` Enter
 Type `cd "$(mktemp -d)" && git clone -q "$OLDPWD" levi && cd levi` Enter
@@ -29,8 +30,7 @@ Sleep 8s
 Type "clear" Enter
 Show
 
-# levi is a picker: Enter prints the commit's sha for the command around it.
-Type "git show --stat $(levi)"
+Type "levi"
 Sleep 600ms
 Enter
 Sleep 2s
@@ -67,15 +67,11 @@ Sleep 300ms
 Enter
 Sleep 1.2s
 
-# Pick it: levi exits and git show takes the sha.
+# Pick it: levi prints its sha and exits, so `git show $(levi)` works.
 Enter
-Sleep 3s
+Sleep 2s
 
 # --filter runs the same search without the TUI, for scripts and coding agents.
-Hide
-Type "clear"
-Enter
-Show
 Type "levi --filter '/c fn tok"
 Type "ens'"
 Sleep 500ms
