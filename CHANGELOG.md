@@ -7,6 +7,8 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-10-17
+
 ### Fixed
 
 - `Ctrl-O` inside `$(levi)`, as in `git show $(levi)`: the editor drew into the pipe meant for the
@@ -184,7 +186,8 @@ First release.
 - `--help` and `--version`.
 - `cargo deny` configuration for license, advisory and source checks.
 
-[Unreleased]: https://github.com/rsdlt/levi/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/rsdlt/levi/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/rsdlt/levi/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/rsdlt/levi/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/rsdlt/levi/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/rsdlt/levi/compare/v0.11.2...v0.12.0
