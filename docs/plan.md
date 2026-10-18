@@ -86,6 +86,24 @@ Details settled while building:
 - Diffs load lazily on a worker thread and are cached in an LRU keyed by `(sha, path)`.
 - Stale diff responses (selection moved on) are dropped, so fast navigation never stalls.
 
+### Benchmark for the README (0.15.0, 2026-10-18)
+
+git.git at 82,513 commits, Apple M4 Pro (12 cores), git 2.56, the Homebrew release binary;
+median of 3 runs after a warm-up, through `levi --filter`, so anyone can rerun them:
+
+| Job | levi | git |
+|---|---|---|
+| all history with files | `--filter ''` 0.86 s | `git log --name-status` 2.82 s |
+| code search, all history | `--filter '/c git_parse_ssize_t'` 6.6 s, 12 commits | `git log -i -G git_parse_ssize_t` 19.1 s, 6 commits |
+| code search, one path | `--filter 'parse.c /c git_parse_ssize_t'` 1.12 s, 2 commits | `git log -i -G … -- parse.c` 0.49 s, 1 commit |
+
+The 6 extra commits from `/c` are merges, which `git log -G` skips and levi diffs against their
+first parent. git wins the one-path search from cold: `--filter` loads all history first
+(0.86 s), and the fuzzy `parse.c` also matches `parse-options.c` and others; in the TUI the
+history is already loaded. First screen in the TUI, in a pty that answers the background query
+like a real terminal: 48–55 ms (50 median over 7 runs); without an answer it waits out the
+100 ms limit (191 ms).
+
 ## Keys
 
 | Key | Action |

@@ -8,12 +8,36 @@ levi browses the commits on your branch, the files each one touched, and their d
 search commits and files fzf style, and add `/c` to search the code itself: levi finds the
 commit that added or removed any line you name.
 
-Named after humanity's strongest soldier: small, swift and precise. Captain Levi doesn't carry
-gear he won't use.
+![levi browsing its own history: a fuzzy search, a diff in syntax colors with tinted changes, Ctrl-Y copying a sha, /c finding the commit that added a line, Ctrl-O opening it in Neovim, Enter printing the sha, and levi --filter running the same search without the TUI](docs/demo.gif)
+
+## Why levi
+
+You and your agents made forty commits since lunch, and now the parser is broken. Finding the
+commit that did it takes git a `git log -p` scrolled by hand, or a `git log -G` that leaves you
+waiting.
+
+levi does that one job: find the change and show it. Named after humanity's strongest soldier,
+he's small, swift and precise. Captain Levi doesn't carry gear he won't use.
 
 *Why not tig or lazygit?* Those are full squads. Levi is one soldier, two blades and no small talk.
 
-![levi browsing its own history: a fuzzy search, a diff in syntax colors with tinted changes, Ctrl-Y copying a sha, /c finding the commit that added a line, Ctrl-O opening it in Neovim, Enter printing the sha, and levi --filter running the same search without the TUI](docs/demo.gif)
+## Speed
+
+levi loads history on every core at once and searches it in memory. On
+[git.git](https://github.com/git/git), with 82,513 commits, on an Apple M4 Pro (12 cores),
+against the git command that does the same job:
+
+| Job | levi | git |
+|---|---|---|
+| Load all history, with the files each commit touched | **0.86 s** | 2.8 s, `git log --name-status` |
+| Search every diff for a line of code | **6.6 s** | 19.1 s, `git log -G` |
+
+levi searched more, too: `git log -G` skips merge commits, and levi checks those against their
+first parent. You never wait for the full load: the first screen lands in 50 ms, and history
+streams in behind it while you type. Each keystroke refilters all 82k commits in 5 to 12 ms.
+
+Rerun it on any big repository: time `levi --filter ''` against `git log --name-status`, and
+`levi --filter '/c some_function'` against `git log -i -G some_function`.
 
 ## Enlist
 
@@ -118,8 +142,6 @@ To run levi in a floating window inside Neovim, see [docs/neovim.md](docs/neovim
 
 ## Field report
 
-- **Swift.** On git.git, with 82k commits, the first screen lands in 40 ms and the whole history
-  in under a second. Searches take 5 to 12 ms, and `/c` spreads its digging across your cores.
 - **Precise.** levi lights the words that changed in each line, like git's `diff-highlight`.
   Code takes syntax colors from your terminal's palette. On terminals like Ghostty, changed
   lines also get a soft tint that suits your theme, dark or light.
