@@ -83,22 +83,66 @@ fn unknown_argument() {
 
 fn repo_with_two_commits() -> TempDir {
     let dir = TempDir::new().unwrap();
-    let git = |args: &[&str]| {
-        let ok = Command::new("git")
-            .current_dir(dir.path())
-            .args(["-c", "user.name=Levi", "-c", "user.email=levi@scouts"])
-            .args(["-c", "commit.gpgsign=false"])
-            .args(args)
-            .output()
-            .unwrap()
-            .status
-            .success();
-        assert!(ok, "git {args:?}");
-    };
-    git(&["init", "-q", "-b", "main"]);
-    git(&["commit", "-q", "--allow-empty", "-m", "one"]);
-    git(&["commit", "-q", "--allow-empty", "-m", "two"]);
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    git(dir.path(), &["commit", "-q", "--allow-empty", "-m", "one"]);
+    git(dir.path(), &["commit", "-q", "--allow-empty", "-m", "two"]);
     dir
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let ok = Command::new("git")
+        .current_dir(dir)
+        .args(["-c", "user.name=Levi", "-c", "user.email=levi@scouts"])
+        .args(["-c", "commit.gpgsign=false"])
+        .args(args)
+        .output()
+        .unwrap()
+        .status
+        .success();
+    assert!(ok, "git {args:?}");
+}
+
+/// stdout's lines, each without its 40-char sha, after checking it's there.
+fn subjects(out: &Output) -> Vec<String> {
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|line| {
+            let (sha, subject) = line.split_once(' ').unwrap();
+            assert!(sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()));
+            subject.to_owned()
+        })
+        .collect()
+}
+
+#[test]
+fn filter_prints_what_the_search_finds() {
+    // No terminal here, which --filter doesn't need.
+    let dir = repo_with_two_commits();
+    let out = levi(dir.path(), &["--filter", "two"]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(subjects(&out), ["two"]);
+    assert_eq!(subjects(&levi(dir.path(), &["-f", ""])), ["two", "one"]);
+    assert_eq!(
+        subjects(&levi(dir.path(), &["--filter=", "HEAD~1"])),
+        ["one"]
+    );
+
+    // /c searches the diffs, as in the search bar.
+    std::fs::write(dir.path().join("wall.rs"), "let titan = 1;\n").unwrap();
+    git(dir.path(), &["add", "wall.rs"]);
+    git(dir.path(), &["commit", "-q", "-m", "three"]);
+    assert_eq!(subjects(&levi(dir.path(), &["-f", "/c titan"])), ["three"]);
+    assert_eq!(
+        subjects(&levi(dir.path(), &["-f", "wall /c titan"])),
+        ["three"]
+    );
+
+    // Nothing found: exit 1, like grep; errors exit 2.
+    let out = levi(dir.path(), &["-f", "/c colossal"]);
+    assert_eq!((out.status.code(), out.stdout.len()), (Some(1), 0));
+    let out = levi(dir.path(), &["--filter"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stderr(&out).contains("'--filter' needs a query"));
 }
 
 #[test]

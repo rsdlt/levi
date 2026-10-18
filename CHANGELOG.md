@@ -7,6 +7,12 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+### Added
+
+- `levi --filter '<query>' [revision]` runs the search without the TUI, like `fzf --filter`, and
+  prints `<sha> <subject>` per match, best first. For scripts and coding agents: the full query
+  syntax, `/c` and `/r` included. It exits 1 when nothing matches.
+
 ## [0.13.0] - 2026-10-17
 
 ### Added

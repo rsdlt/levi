@@ -197,6 +197,12 @@ All five steps are done.
 - Bare repositories work (commands run from the bare dir instead of a work tree's top level).
 - Exit codes: 0 with a picked sha on stdout, 130 when quit without picking (like fzf), so
   `sha=$(levi) && git show "$sha"` stops cleanly.
+- `--filter <query>` (`-f`, `--filter=`) runs the same search headless, like `fzf --filter`:
+  `App` is driven by the log loader and code searcher with no terminal and no input thread, a
+  `/c` search starting as soon as the log is in (nobody is typing, so no debounce), until both
+  are done. Then each hit prints as `<full sha> <subject>` (the reflog action under `/r`), best
+  first. Exit 0 with matches, 1 without, 2 on errors, like grep, so agents and scripts can tell
+  "nothing" from "broken". A closed pipe ends the output quietly.
 - Integration tests in `tests/cli.rs` run the real binary for every pre-TUI path.
 
 ## Commands

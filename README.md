@@ -128,6 +128,26 @@ commits takes 6–9 seconds instead of 55, and `parse.c /c ...` under 0.2; on a 
 it's over before you notice. Edit the query
 and the old search is dropped on the spot.
 
+## Reconnaissance
+
+Scripts and coding agents can't work a TUI, so `--filter` runs the same search without one and
+reports back: one `<sha> <subject>` line per match, best first. It exits 1 when nothing matches.
+
+```sh
+levi --filter 'parse.rs /c fn parse'    # which commits changed `fn parse` in parse.rs
+levi --filter 'login fix' main..HEAD    # only this branch
+levi -f '/r rebase'                     # the reflog
+```
+
+To brief Claude Code or another agent, add this to your `CLAUDE.md` or `AGENTS.md`:
+
+```markdown
+To find the commits that touched some code, run `levi --filter '<query>'`. The query is fuzzy
+over commit subject, author, sha and file paths; `/c <text>` keeps only commits whose diffs add
+or remove `<text>` (literal, smart case), and `/r` searches the reflog. It prints
+`<sha> <subject>`, best match first. Then read one with `git show <sha>`.
+```
+
 ## Field report
 
 - **Swift.** It opens instantly on huge repositories: history loads on every core at once
