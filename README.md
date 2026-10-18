@@ -1,5 +1,7 @@
 # levi
 
+**The fastest blade for your git history. Fuzzy search for you, plain text for your agents.**
+
 [![CI](https://github.com/rsdlt/levi/actions/workflows/ci.yml/badge.svg)](https://github.com/rsdlt/levi/actions/workflows/ci.yml)
 
 > *Tch. Your history is filthy. Let's look at it properly.*
