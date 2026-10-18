@@ -1,10 +1,10 @@
 <p align="center">
   <img src="docs/logo.svg" width="160" alt="levi: two crossed blades over a git commit graph">
+  <br>
+  <em>The fastest blade for your git history. Fuzzy search for you, plain text for your agents.</em>
 </p>
 
 # levi
-
-**The fastest blade for your git history. Fuzzy search for you, plain text for your agents.**
 
 [![CI](https://github.com/rsdlt/levi/actions/workflows/ci.yml/badge.svg)](https://github.com/rsdlt/levi/actions/workflows/ci.yml)
 
