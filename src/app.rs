@@ -741,7 +741,7 @@ impl App {
 }
 
 /// Terminal columns `text` takes up.
-fn columns(text: &str) -> usize {
+pub fn columns(text: &str) -> usize {
     Span::raw(text).width()
 }
 

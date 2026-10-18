@@ -21,6 +21,14 @@ the layout stacks: commits | files take the top 35% (55% / 45% of the width) and
 full width below. It follows the terminal's width on every frame; there's no toggle key, for the
 same reason as the hints below. Focus order and keys don't change.
 
+A path too long for the files column loses its start, never its end: whole leading directories
+go first, so it reads `…/components/frontend/Button.tsx`, and only a file name wider than the
+column itself gets cut (`…ton.tsx`). Wrapping was rejected: one row per file keeps clicks, scrolling
+and the selection simple. Renames are written like `git diff --stat` does, the shared directories
+once: `src/{old.rs → new.rs}`, `src/{a → b}/mod.rs`. When even the part in braces doesn't fit, the
+row shows just the new path (the `R` still says it's a rename). Highlights follow the visible text;
+the diff's title always has the full path.
+
 The bottom row lists key hints, `/c` and `/r` included, so nobody has to read `--help` to find
 them. They're ordered by usefulness; whatever doesn't fit the width is dropped from the end, never
 cut mid-hint. One row, always on: no toggle key, since every printable key belongs to the search.

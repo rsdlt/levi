@@ -10,7 +10,7 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 
-use crate::app::{App, DiffView, Focus};
+use crate::app::{App, DiffView, Focus, columns};
 use crate::git::{DiffLine, LineKind, Status};
 use crate::query::{Source, find_code};
 
@@ -265,8 +265,11 @@ fn draw_commits(frame: &mut Frame, app: &mut App, area: Rect) {
 fn draw_files(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::Files;
     let block = pane("files", focused);
-    let height = block.inner(area).height as usize;
+    let inner = block.inner(area);
+    let height = inner.height as usize;
     follow(&mut app.file_offset, app.file_idx, height);
+    // After the status letter and its space.
+    let width = (inner.width as usize).saturating_sub(2);
 
     let App {
         view,
@@ -293,24 +296,164 @@ fn draw_files(frame: &mut Frame, app: &mut App, area: Rect) {
                 Span::styled(f.status.letter().to_string(), status_style(f.status)),
                 Span::raw(" "),
             ];
-            if let Some(old) = &f.old_path {
-                spans.extend(highlighted(
-                    old,
-                    &filter.highlights(old, true),
-                    Style::new().dim(),
-                ));
-                spans.push(Span::styled(" → ", Style::new().dim()));
-            }
-            spans.extend(highlighted(
-                &f.path,
-                &filter.highlights(&f.path, true),
-                Style::new(),
-            ));
+            let new = (f.path.as_str(), filter.highlights(&f.path, true));
+            let parts = match &f.old_path {
+                Some(old) => renamed((old, filter.highlights(old, true)), new, width),
+                None => vec![Part::new(new.0, new.1, Style::new())],
+            };
+            spans.extend(fitted(parts, width));
             ListItem::new(Line::from(spans))
         })
         .collect();
     let row = app.file_idx - app.file_offset;
     draw_window(frame, area, block, items, row, focused);
+}
+
+/// A piece of a files-pane row: text, the chars of it to highlight, its style.
+struct Part<'a> {
+    text: &'a str,
+    marks: Vec<usize>,
+    style: Style,
+}
+
+impl<'a> Part<'a> {
+    fn new(text: &'a str, marks: Vec<usize>, style: Style) -> Self {
+        Part { text, marks, style }
+    }
+
+    fn plain(text: &'a str) -> Self {
+        Part::new(text, Vec::new(), Style::new().dim())
+    }
+}
+
+/// A rename the way `git diff --stat` writes it, the shared directories once:
+/// `src/{old.rs → new.rs}` or `src/{a → b}/mod.rs`. Each path comes with its
+/// highlighted chars. When even the part that changed can't fit `width`, it's
+/// just the new path, so a cut never lands inside the rename.
+fn renamed<'a>(
+    old: (&'a str, Vec<usize>),
+    new: (&'a str, Vec<usize>),
+    width: usize,
+) -> Vec<Part<'a>> {
+    let ((old, old_marks), (new, new_marks)) = (old, new);
+    // Byte lengths of the shared leading directories and trailing ones, each
+    // ending or starting at a `/`, while both sides keep something between.
+    let head = common_dirs(old.bytes(), new.bytes());
+    let tail = common_dirs(old[head..].bytes().rev(), new[head..].bytes().rev());
+    let (old_end, new_end) = (old.len() - tail, new.len() - tail);
+    // Highlights are char positions; these take the ones inside a byte range.
+    let within = |path: &str, marks: &[usize], range: Range<usize>| -> Vec<usize> {
+        let from = path[..range.start].chars().count();
+        let to = path[..range.end].chars().count();
+        marks
+            .iter()
+            .filter(|&&m| (from..to).contains(&m))
+            .map(|&m| m - from)
+            .collect()
+    };
+    let bright = Style::new();
+    // The changed part with what follows it: `{old → new}/rest`, or all of
+    // `old → new` when nothing is shared up front.
+    let changed = columns(&old[head..]) + columns(" → ") + columns(&new[head..]);
+    let braces = if head > 0 || tail > 0 { 2 } else { 0 };
+    let whole = columns(&new[..head]) + changed + braces;
+    if whole > width && changed + braces + columns("…") > width {
+        return vec![Part::new(new, new_marks, bright)];
+    }
+    if braces == 0 {
+        return vec![
+            Part::new(old, old_marks, bright.dim()),
+            Part::plain(" → "),
+            Part::new(new, new_marks, bright),
+        ];
+    }
+    vec![
+        Part::new(&new[..head], within(new, &new_marks, 0..head), bright),
+        Part::plain("{"),
+        Part::new(
+            &old[head..old_end],
+            within(old, &old_marks, head..old_end),
+            bright.dim(),
+        ),
+        Part::plain(" → "),
+        Part::new(
+            &new[head..new_end],
+            within(new, &new_marks, head..new_end),
+            bright,
+        ),
+        Part::plain("}"),
+        Part::new(
+            &new[new_end..],
+            within(new, &new_marks, new_end..new.len()),
+            bright,
+        ),
+    ]
+}
+
+/// How many leading bytes `a` and `b` share, cut back to just after a `/`
+/// (or, read in reverse, to a `/`), leaving both with something past it.
+fn common_dirs(a: impl Iterator<Item = u8>, b: impl Iterator<Item = u8>) -> usize {
+    let (a, b): (Vec<u8>, Vec<u8>) = (a.collect(), b.collect());
+    let shared = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let shared = shared
+        .min(a.len().saturating_sub(1))
+        .min(b.len().saturating_sub(1));
+    a[..shared]
+        .iter()
+        .rposition(|&c| c == b'/')
+        .map_or(0, |i| i + 1)
+}
+
+/// The parts in at most `width` columns, highlighted. Too long a row loses its
+/// start, at a `/` when it can, so its end, the file name, always shows:
+/// `…/components/Button.tsx`.
+fn fitted<'a>(parts: Vec<Part<'a>>, width: usize) -> Vec<Span<'a>> {
+    let whole: String = parts.iter().map(|p| p.text).collect();
+    let mut skip = cut(&whole, width);
+    let mut spans = Vec::new();
+    if skip > 0 {
+        spans.push(Span::styled("…", Style::new().dim()));
+    }
+    for part in parts {
+        if skip >= part.text.len() {
+            skip -= part.text.len();
+            continue;
+        }
+        // Highlight positions count chars, so drop and shift past the cut ones.
+        let dropped = part.text[..skip].chars().count();
+        let marks: Vec<usize> = part
+            .marks
+            .iter()
+            .filter_map(|&m| m.checked_sub(dropped))
+            .collect();
+        spans.extend(highlighted(&part.text[skip..], &marks, part.style));
+        skip = 0;
+    }
+    spans
+}
+
+/// The byte where a shortened `path` starts so that `…` and the rest fit in
+/// `width` columns: at a `/` when the rest fits from one, so whole directories
+/// go first. 0 when the path fits as it is.
+fn cut(path: &str, width: usize) -> usize {
+    if columns(path) <= width {
+        return 0;
+    }
+    let room = width.saturating_sub(1);
+    // The earliest start (longest tail) that fits, and the earliest at a `/`.
+    let (mut fits, mut at_slash) = (path.len(), None);
+    let mut used = 0;
+    for (i, c) in path.char_indices().rev() {
+        used += columns(&path[i..i + c.len_utf8()]);
+        if used > room {
+            break;
+        }
+        fits = i;
+        if c == '/' {
+            at_slash = Some(i);
+        }
+    }
+    at_slash.unwrap_or(fits)
 }
 
 fn matched(style: Style) -> Style {
@@ -1013,6 +1156,108 @@ mod tests {
         assert_eq!(parts, ["ñ", "an", "d", "ú"]);
         assert!(spans[1].style.add_modifier.contains(Modifier::UNDERLINED));
         assert!(!spans[2].style.add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    /// What `fitted` shows, as text.
+    fn shown(spans: &[Span]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn fit(path: &str, width: usize) -> String {
+        shown(&fitted(vec![Part::new(path, vec![], Style::new())], width))
+    }
+
+    fn rename(old: &str, new: &str) -> String {
+        shown(&fitted(renamed((old, vec![]), (new, vec![]), 100), 100))
+    }
+
+    #[test]
+    fn long_paths_keep_their_end() {
+        let deep = "app/frontend/src/components/frontend/Button.tsx";
+        assert_eq!(fit(deep, 47), deep, "what fits is left alone");
+        // Whole directories go first, so the rest starts at a `/`...
+        assert_eq!(
+            fit(deep, 46),
+            "…/frontend/src/components/frontend/Button.tsx"
+        );
+        assert_eq!(fit(deep, 32), "…/components/frontend/Button.tsx");
+        // ...then the start of the name, once even that doesn't fit.
+        assert_eq!(fit(deep, 8), "…ton.tsx");
+        assert_eq!(fit(deep, 0), "…");
+        // Wide chars count by the columns they take.
+        assert_eq!(fit("dir/日本語.rs", 8), "…本語.rs");
+
+        // Highlights move with the text that's left.
+        let part = Part::new("src/a/Button.tsx", vec![0, 6, 7], Style::new());
+        let spans = fitted(vec![part], 12);
+        let parts: Vec<_> = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(parts, ["…", "/", "Bu", "tton.tsx"]);
+        assert!(spans[2].style.add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn renames_write_shared_directories_once() {
+        assert_eq!(
+            rename("app/fe/Button.tsx", "app/fe/Knob.tsx"),
+            "app/fe/{Button.tsx → Knob.tsx}"
+        );
+        assert_eq!(rename("src/a/mod.rs", "src/b/mod.rs"), "src/{a → b}/mod.rs");
+        assert_eq!(rename("a/x.rs", "a/b/x.rs"), "a/{x.rs → b/x.rs}");
+        assert_eq!(rename("x.rs", "y.rs"), "x.rs → y.rs");
+        assert_eq!(rename("é/x.rs", "é/ý.rs"), "é/{x.rs → ý.rs}");
+
+        // Narrower, the shared directories go first; once the change itself
+        // doesn't fit, only the new path is left, its end showing.
+        let (old, new) = ("app/fe/Button.tsx", "app/fe/PrimaryButton.tsx");
+        let at = |width| shown(&fitted(renamed((old, vec![]), (new, vec![]), width), width));
+        assert_eq!(at(34), "…/{Button.tsx → PrimaryButton.tsx}");
+        assert_eq!(at(33), "…{Button.tsx → PrimaryButton.tsx}");
+        assert_eq!(at(32), "app/fe/PrimaryButton.tsx");
+        assert_eq!(at(20), "…/PrimaryButton.tsx");
+        assert_eq!(at(12), "…yButton.tsx");
+
+        // Each side keeps its own highlights: here "src/a/mod.rs" matched on
+        // its "a" (char 4) and "src/b/mod.rs" on its "b" and "m" (4 and 6).
+        let spans = fitted(
+            renamed(("src/a/mod.rs", vec![4]), ("src/b/mod.rs", vec![4, 6]), 100),
+            100,
+        );
+        let lit: Vec<_> = spans
+            .iter()
+            .filter(|s| s.style.add_modifier.contains(Modifier::UNDERLINED))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(lit, ["a", "b", "m"]);
+    }
+
+    #[test]
+    fn files_pane_shows_the_end_of_long_paths() {
+        let repo = Repo::new();
+        let deep = "app/frontend/src/components/frontend/Button.tsx";
+        repo.write(deep, "export {}\n");
+        repo.commit("button");
+        repo.git(&["mv", deep, "app/frontend/src/components/frontend/Knob.tsx"]);
+        repo.commit("rename");
+        let mut app = loaded(&repo);
+        serve_diffs(&mut app, &repo);
+        let screen = render(&mut app);
+        let files = app.panes[1];
+        let row = |screen: &str| -> String {
+            let line = screen.lines().nth(files.y as usize + 1).unwrap();
+            line.chars()
+                .skip(files.x as usize + 1)
+                .take(files.width as usize - 2)
+                .collect()
+        };
+        // Too narrow for the rename itself, so the new path shows, its end first.
+        assert_eq!(row(&screen).trim_end(), "R …/frontend/Knob.tsx");
+        // The diff's title has the whole path.
+        assert!(screen.contains("app/frontend/src/components/frontend/Knob.tsx"));
+
+        press(&mut app, KeyCode::Down);
+        serve_diffs(&mut app, &repo);
+        let added = row(&render(&mut app));
+        assert_eq!(added.trim_end(), "A …/Button.tsx");
     }
 
     #[test]

@@ -7,6 +7,12 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+### Changed
+
+- Long paths in the files column keep their end in view: leading directories give way first, as in
+  `…/components/frontend/Button.tsx`, so the file name always shows. Renames are written like
+  `git diff --stat`, with the shared directories once: `src/{old.rs → new.rs}`.
+
 ## [0.12.0] - 2026-10-17
 
 ### Added
