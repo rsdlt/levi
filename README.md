@@ -68,6 +68,7 @@ commits, so `/c` is faster too. `/r` still shows the whole reflog.
 | `S-↑` `S-↓` | jump to the previous/next hunk, or `/c` match |
 | `S-←` `S-→` | scroll the diff sideways, for lines wider than the pane |
 | `Enter` | print the selected commit's sha and quit |
+| `C-y` | copy the selected commit's sha, and stay |
 | `C-w` | delete the last word of the search |
 | `Esc` | clear the search, or quit if it's empty |
 | `C-c` | quit |

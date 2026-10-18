@@ -198,6 +198,11 @@ pub struct App {
     /// Where the commits, files and diff panes are on screen, updated on every
     /// draw, so clicks can find their target.
     pub panes: [Rect; 3],
+    /// Text waiting to go to the clipboard (see `take_clipboard`).
+    clipboard: Option<String>,
+    /// A one-off message for the status line, like what was just copied.
+    /// The next key or click clears it.
+    pub notice: Option<String>,
     pub exit: Option<Exit>,
     diffs: DiffCache,
     /// Last diff handed out by `take_diff_request`.
@@ -238,6 +243,8 @@ impl App {
             diff_height: 0,
             diff_width: 0,
             panes: [Rect::default(); 3],
+            clipboard: None,
+            notice: None,
             exit: None,
             diffs: DiffCache::default(),
             requested: None,
@@ -263,6 +270,7 @@ impl App {
                 if !is_query_edit(&key) {
                     self.settle();
                 }
+                self.notice = None;
                 self.handle_key(key);
             }
             Msg::Input(Event::Mouse(mouse)) => {
@@ -520,6 +528,17 @@ impl App {
         }
     }
 
+    fn copy(&mut self, text: String, notice: String) {
+        self.clipboard = Some(text);
+        self.notice = Some(notice);
+    }
+
+    /// Text to put on the clipboard, if something was just copied. The main
+    /// loop does it, since it owns the terminal.
+    pub fn take_clipboard(&mut self) -> Option<String> {
+        self.clipboard.take()
+    }
+
     /// The commit list to load, when the source changed.
     pub fn take_log_request(&mut self) -> Option<LogRequest> {
         self.settle();
@@ -625,6 +644,12 @@ impl App {
             KeyCode::Left if shift => self.scroll_diff_sideways(-SIDE_STEP),
             KeyCode::Tab | KeyCode::Right => self.focus = self.focus.next(),
             KeyCode::BackTab | KeyCode::Left => self.focus = self.focus.prev(),
+            KeyCode::Char('y') if ctrl => {
+                if let Some(commit) = self.commit() {
+                    let notice = format!("copied {}", commit.short);
+                    self.copy(commit.sha.clone(), notice);
+                }
+            }
             KeyCode::Enter => {
                 if let Some(commit) = self.commit() {
                     self.exit = Some(Exit::Pick(commit.sha.clone()));

@@ -1,4 +1,5 @@
 mod app;
+mod clipboard;
 mod filter;
 mod git;
 mod query;
@@ -53,6 +54,7 @@ Keys:
   S-↑/S-↓             jump to the previous/next hunk, or /c match
   S-←/S-→             scroll the diff sideways
   Enter               print the selected sha and quit:  git show $(levi)
+  C-y                 copy the selected commit's sha
   C-w                 delete the last word of the query
   Esc                 clear the query, or quit
   C-c                 quit
@@ -132,6 +134,9 @@ fn run(terminal: &mut Tui, app: &mut App, root: PathBuf) -> Result<()> {
         }
         if let Some(req) = app.take_diff_request() {
             diffs.send(req)?;
+        }
+        if let Some(text) = app.take_clipboard() {
+            clipboard::copy(&text);
         }
         terminal.draw(|frame| ui::draw(frame, app))?;
         // Sleep until something happens, or until a pending code search is due.

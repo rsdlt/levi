@@ -18,13 +18,14 @@ const ACCENT: Color = Color::Cyan;
 
 /// The bottom row's key hints, most useful first. Those that don't fit the
 /// terminal's width are dropped from the end.
-const HINTS: [(&str, &str); 9] = [
+const HINTS: [(&str, &str); 10] = [
     ("↑↓", "move"),
     ("enter", "pick"),
     ("/c", "search code"),
     ("/r", "reflog"),
     ("tab", "pane"),
     ("esc", "clear/quit"),
+    ("C-y", "copy sha"),
     ("pgup/pgdn", "scroll"),
     ("S-↑↓", "hunk"),
     ("S-←→", "sideways"),
@@ -165,6 +166,12 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
             ));
         }
         _ => {}
+    }
+    if let Some(notice) = &app.notice {
+        status.push_span(Span::styled(
+            format!("· {notice} "),
+            Style::new().fg(ACCENT),
+        ));
     }
     let mut title = vec![Span::raw(" "), "levi".bold()];
     if app.source == Source::Reflog {
@@ -1014,15 +1021,34 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_y_copies_the_full_sha() {
+        let repo = titans();
+        let mut app = loaded(&repo);
+        press(&mut app, KeyCode::Down);
+        let ctrl_y = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL);
+        app.update(Msg::Input(Event::Key(ctrl_y)));
+        let commit = app.commit().unwrap().clone();
+        assert_eq!(app.take_clipboard(), Some(commit.sha.clone()));
+        assert_eq!(app.take_clipboard(), None, "copied once");
+        assert_eq!(app.query, "", "not typed into the search");
+        let notice = format!("· copied {} ", commit.short);
+        assert!(render(&mut app).contains(&notice));
+
+        // The next key clears the notice.
+        press(&mut app, KeyCode::Up);
+        assert!(!render(&mut app).contains("copied"));
+    }
+
+    #[test]
     fn key_hints_fit_the_width() {
         let mut app = App::new();
         let screen = render_at(&mut app, 100, 24);
         let bottom = screen.lines().last().unwrap();
         assert!(bottom.starts_with(" ↑↓ move  enter pick  /c search code  /r reflog  tab pane"));
-        assert!(bottom.contains("pgup/pgdn scroll"));
+        assert!(bottom.contains("C-y copy sha"));
         assert!(
-            !bottom.contains("sideways"),
-            "the last one doesn't fit 100 columns"
+            !bottom.contains("pgup/pgdn"),
+            "the later ones don't fit 100 columns"
         );
 
         // Narrower: the least useful go, and no hint is cut in half.

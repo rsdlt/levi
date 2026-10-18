@@ -7,6 +7,12 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+### Added
+
+- `Ctrl-Y` copies the selected commit's full sha to the clipboard and keeps levi open. It goes
+  through the terminal (OSC 52, which works over SSH) and through `pbcopy` or
+  `wl-copy`/`xclip`/`xsel`.
+
 ### Changed
 
 - Long paths in the files column keep their end in view: leading directories give way first, as in

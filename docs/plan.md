@@ -97,6 +97,7 @@ Details settled while building:
 | `S-↑/S-↓` | jump the diff to the previous/next `@@` hunk, putting it on top; with `/c` on, to the previous/next matching line instead, with 3 lines of context and sideways into view. Stops at the ends, works from any pane |
 | `S-←/S-→` | scroll the diff sideways, 8 columns (Alt-arrows would be word jumps in macOS terminals) |
 | `Enter` | print the selected sha to stdout and quit (`git checkout $(levi)`) |
+| `C-y` | copy the selected commit's full sha to the clipboard and stay ("yank"); the status line says `copied <short>` until the next key |
 | `C-w` | delete the query's last word and the spaces after it, as in a shell (`C-u` can't clear the line: it scrolls the diff) |
 | `Esc` | clear the query, or quit if it's already empty |
 | `C-c` | quit |
@@ -108,6 +109,14 @@ events are dropped in the input thread, since capture reports every movement and
 cost a redraw. The renderer records the three pane rects in `App::panes` for hit-testing.
 Native text selection needs a modifier (Option / Fn / Shift, per terminal); the sha, the thing
 usually copied, comes out on stdout anyway.
+
+## Clipboard
+
+Copying (`C-y`, and dragging with the mouse) goes two ways at once, since neither reports back:
+OSC 52 written to the terminal, which works over SSH and in Ghostty, iTerm2, kitty, WezTerm,
+Alacritty and Windows Terminal; and the platform's tool (`pbcopy`, or `wl-copy`/`xclip`/`xsel`),
+for terminals without OSC 52 such as macOS Terminal.app. `App` only records what to copy; the
+main loop, which owns the terminal, sends it.
 
 ## Crates
 
