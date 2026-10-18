@@ -16,6 +16,7 @@ use ratatui::crossterm::event::{self, Event, MouseButton, MouseEventKind};
 use crate::app::{CodeRequest, CodeTarget, DiffRequest, LogRequest, Msg};
 use crate::git::{self, Commit};
 use crate::query::Source;
+use crate::syntax;
 
 /// Commits per message during the initial burst...
 const BATCH_SIZE: usize = 512;
@@ -431,19 +432,72 @@ pub fn search_now(root: &Path, req: &CodeRequest) -> Vec<(String, Vec<String>)> 
         .collect()
 }
 
-/// Runs `git show` off the UI thread. Requests that pile up while one is running
-/// are skipped in favour of the newest, so scrolling fast never builds a queue.
+/// Diffs whose coloring a newer request cut short, kept to finish when idle.
+const UNFINISHED: usize = 16;
+
+/// Runs `git show` off the UI thread, one diff at a time. Requests that pile up
+/// while one is running are skipped in favour of the newest, so scrolling fast
+/// never builds a queue. Each diff goes out twice: plain
+/// at once, then with syntax colors, which replace it in place. Coloring a big
+/// diff takes a while, so a newer request cuts it short; the plain one stays
+/// shown, and the coloring is done over once nothing else is waiting.
 pub fn spawn_diff(root: PathBuf, tx: Sender<Msg>) -> Sender<DiffRequest> {
     let (req_tx, req_rx) = mpsc::channel::<DiffRequest>();
     thread::spawn(move || {
-        while let Ok(mut req) = req_rx.recv() {
+        let mut next = None;
+        let mut unfinished: VecDeque<DiffRequest> = VecDeque::new();
+        loop {
+            let mut req = match next.take().or_else(|| req_rx.try_recv().ok()) {
+                Some(req) => req,
+                None => match unfinished.pop_back() {
+                    Some(req) => req,
+                    None => match req_rx.recv() {
+                        Ok(req) => req,
+                        Err(_) => break,
+                    },
+                },
+            };
             while let Ok(newer) = req_rx.try_recv() {
                 req = newer;
             }
-            let result = git::diff(&root, &req.sha, req.file.as_ref())
-                .map(|text| git::parse_diff(&text))
-                .map_err(|e| e.to_string());
-            if tx.send(Msg::Diff(req.key(), result)).is_err() {
+            let lines = match git::diff(&root, &req.sha, req.file.as_ref()) {
+                Ok(text) => git::parse_diff(&text),
+                Err(e) => {
+                    if tx.send(Msg::Diff(req.key(), Err(e.to_string()))).is_err() {
+                        break;
+                    }
+                    continue;
+                }
+            };
+            let Some(file) = &req.file else {
+                if tx.send(Msg::Diff(req.key(), Ok(lines))).is_err() {
+                    break;
+                }
+                continue;
+            };
+            if tx.send(Msg::Diff(req.key(), Ok(lines.clone()))).is_err() {
+                break;
+            }
+            let mut colored = lines;
+            let wanted = || match req_rx.try_recv() {
+                Ok(newer) => {
+                    next = Some(newer);
+                    false
+                }
+                Err(_) => true,
+            };
+            if !syntax::mark(&mut colored, &file.path, wanted) {
+                if next.is_some() {
+                    let key = req.key();
+                    unfinished.retain(|r| r.key() != key);
+                    unfinished.push_back(req);
+                    if unfinished.len() > UNFINISHED {
+                        unfinished.pop_front();
+                    }
+                }
+                continue;
+            }
+            if tx.send(Msg::Diff(req.key(), Ok(colored))).is_err() {
                 break;
             }
         }
@@ -477,6 +531,44 @@ mod tests {
     /// Everything but the relative date, which can tick between two loads.
     fn key(c: &Commit) -> (String, String, Vec<git::FileChange>) {
         (c.sha.clone(), c.subject.clone(), c.files.clone())
+    }
+
+    #[test]
+    fn diffs_come_plain_then_colored() {
+        let repo = Repo::new();
+        repo.write("wall.rs", "fn rose() {}\n");
+        repo.commit("rose");
+        let (tx, rx) = mpsc::channel();
+        let diffs = spawn_diff(repo.path().to_path_buf(), tx);
+        let commit = repo.log().remove(0);
+        diffs
+            .send(DiffRequest {
+                sha: commit.sha.clone(),
+                file: commit.files.first().cloned(),
+            })
+            .unwrap();
+        let next = || match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+            Msg::Diff(_, Ok(lines)) => lines,
+            _ => panic!("expected a diff"),
+        };
+        let code = |lines: &[git::DiffLine]| -> git::DiffLine {
+            lines
+                .iter()
+                .find(|l| l.text == "+fn rose() {}")
+                .unwrap()
+                .clone()
+        };
+        let plain = next();
+        assert_eq!(code(&plain).syntax, None, "first as it is");
+        let colored = next();
+        assert!(code(&colored).syntax.is_some(), "then with colors");
+        let texts =
+            |lines: &[git::DiffLine]| lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>();
+        assert_eq!(
+            texts(&plain),
+            texts(&colored),
+            "the same lines, so nothing moves"
+        );
     }
 
     #[test]

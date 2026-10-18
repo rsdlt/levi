@@ -43,7 +43,7 @@ cut mid-hint. One row, always on: no toggle key, since every printable key belon
 | 4 | Uncommitted changes | **Out for now.** No working-tree pseudo-commit. |
 | 5 | Git backend | Shell out to the `git` CLI (no `git2`/`gix`): respects user config, no C build, small binary. |
 | 6 | Fuzzy matching | `nucleo-matcher` (fzf-compatible syntax: smart case, `^`, `$`, `'`, `!`). |
-| 7 | Diff rendering | Simple coloring (`+` green, `-` red, `@@` cyan, headers dim), the commit message on top, and changed words in reverse video (see Diff pane). No syntax highlighting. |
+| 7 | Diff rendering | The commit message on top, code in syntax colors (the terminal's 16, one fixed mapping) with a green/red `+`/`-` bar and removed lines dimmed, changed words in reverse video (see Diff pane). Files in unknown languages keep plain coloring (`+` green, `-` red); `@@` cyan, headers dim. Syntax colors were out of scope at first, and came in once reading a big repo under heavy agent-driven change showed how much they matter. No themes, no settings, no per-language tweaks. |
 
 ## Git commands
 
@@ -125,7 +125,10 @@ main loop, which owns the terminal, sends it.
 
 ## Crates
 
-`ratatui` (bundled `crossterm`), `nucleo-matcher`, `anyhow`, `lru` (or a small hand-rolled cache).
+`ratatui` (bundled `crossterm`), `nucleo-matcher`, `anyhow`, and `syntect` for syntax colors
+(parsing only: its bundled grammars and the pure-Rust regex engine, no themes, no C library).
+Its grammar bundle is decoded with `bincode` 1.3.3, which RustSec flags as unmaintained but
+its authors call complete; `deny.toml` records the exception.
 
 ## Diff pane
 
@@ -134,6 +137,18 @@ main loop, which owns the terminal, sends it.
   `log.date`), then a NUL, then the patch. Same process, same cache entry, so no extra latency.
   The NUL goes after `%w(0,0,0)`: inside `%w` git drops it. A commit without files shows its
   message and "no file changes".
+- **Syntax colors** (`src/syntax.rs`). syntect parses each hunk's old side (context + removed
+  lines) and new side (context + added) separately, in order, as each version of the file
+  reads; context lines take the new side's colors. Scopes map to the terminal's 16 colors
+  (comments dark gray, strings green, keywords magenta, functions and tags blue, types and
+  constants yellow), so they follow its theme. A hunk starting inside a block comment or
+  multi-line string is miscolored until it ends: the price of not reading whole files. The
+  language comes from the extension or file name; unknown files and plain text keep the plain
+  green/red look. The diff worker sends each diff plain at once, then colored to replace it in
+  place (same lines, so scroll and selection stay); coloring checks every 32 lines for a newer
+  request and gives way, keeping up to 16 interrupted diffs to finish when idle. A 1 MiB budget
+  per diff (about 30,000 lines, a second) and a 1,000-byte cap per line (minified code) bound
+  the work. Grammars load in the background at startup.
 - **Changed words** (`src/words.rs`). In a block of removed lines followed by added ones, pairs
   are taken in order (1st `-` with 1st `+`, …) and compared by token (words, whitespace runs,
   single punctuation): shared ends are trimmed, the middle goes through an LCS. Changed tokens

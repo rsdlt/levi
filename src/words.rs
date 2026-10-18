@@ -192,6 +192,7 @@ mod tests {
                 },
                 text: text.to_string(),
                 emph: Vec::new(),
+                syntax: None,
             })
             .collect()
     }

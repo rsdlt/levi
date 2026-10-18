@@ -577,19 +577,25 @@ fn mark_text(buf: &mut Buffer, app: &App, inner: Rect) {
 
 /// A diff line with its changed words in reverse video, like `diff-highlight`,
 /// and every occurrence of the code-search text marked on top.
+/// A diff line's spans, in layers: its base look (plain green/red, or syntax
+/// colors when its language is known), then changed words in reverse video,
+/// then `/c` matches on top.
 fn diff_line<'a>(line: &'a DiffLine, pattern: Option<&str>) -> Line<'a> {
     let text = line.text.as_str();
     let base = line_style(line.kind);
     let found = pattern.map_or_else(Vec::new, |p| find_code(text, p));
-    if line.emph.is_empty() && found.is_empty() {
+    let colors = line.syntax.as_deref().unwrap_or_default();
+    if line.emph.is_empty() && found.is_empty() && line.syntax.is_none() {
         return Line::styled(text, base);
     }
     let mut cuts: Vec<usize> = line
         .emph
         .iter()
         .chain(&found)
+        .chain(colors.iter().map(|(r, _)| r))
         .flat_map(|r| [r.start, r.end])
-        .chain([0, text.len()])
+        // The +/- column is styled on its own when there are syntax colors.
+        .chain([0, 1.min(text.len()), text.len()])
         .collect();
     cuts.sort_unstable();
     cuts.dedup();
@@ -597,17 +603,68 @@ fn diff_line<'a>(line: &'a DiffLine, pattern: Option<&str>) -> Line<'a> {
     let spans: Vec<Span> = cuts
         .windows(2)
         .map(|w| {
-            let style = if within(&found, w[0]) {
-                base.patch(code_match())
-            } else if within(&line.emph, w[0]) {
-                base.add_modifier(Modifier::REVERSED)
-            } else {
-                base
+            let at = w[0];
+            let under = match &line.syntax {
+                None => base,
+                Some(_) if at == 0 => marker_style(line.kind),
+                Some(_) => {
+                    let color = colors.iter().find(|(r, _)| r.contains(&at));
+                    let style = color.map_or(Style::new(), |&(_, c)| Style::new().fg(ansi(c)));
+                    // The old version recedes; the bar in front says which is which.
+                    if line.kind == LineKind::Removed {
+                        style.add_modifier(Modifier::DIM)
+                    } else {
+                        style
+                    }
+                }
             };
-            Span::styled(&text[w[0]..w[1]], style)
+            let style = if within(&found, at) {
+                under.patch(code_match())
+            } else if within(&line.emph, at) {
+                under.add_modifier(Modifier::REVERSED)
+            } else {
+                under
+            };
+            Span::styled(&text[at..w[1]], style)
         })
         .collect();
     Line::from(spans)
+}
+
+/// With syntax colors taking the code, the +/- column alone says added or
+/// removed: a solid green or red bar down the changed lines.
+fn marker_style(kind: LineKind) -> Style {
+    let color = match kind {
+        LineKind::Added => Color::Green,
+        LineKind::Removed => Color::Red,
+        _ => return Style::new(),
+    };
+    Style::new()
+        .fg(color)
+        .add_modifier(Modifier::REVERSED | Modifier::BOLD)
+}
+
+/// One of the terminal's 16 colors, so syntax colors follow its theme.
+fn ansi(index: u8) -> Color {
+    const COLORS: [Color; 16] = [
+        Color::Black,
+        Color::Red,
+        Color::Green,
+        Color::Yellow,
+        Color::Blue,
+        Color::Magenta,
+        Color::Cyan,
+        Color::Gray,
+        Color::DarkGray,
+        Color::LightRed,
+        Color::LightGreen,
+        Color::LightYellow,
+        Color::LightBlue,
+        Color::LightMagenta,
+        Color::LightCyan,
+        Color::White,
+    ];
+    COLORS[usize::from(index) % 16]
 }
 
 fn code_match() -> Style {
@@ -1174,6 +1231,49 @@ mod tests {
     }
 
     #[test]
+    fn syntax_colors_take_the_code_and_the_bar_says_added_or_removed() {
+        let mut lines: Vec<DiffLine> = [
+            (LineKind::Hunk, "@@ -1 +1 @@"),
+            (LineKind::Removed, "-let speed = 1;"),
+            (LineKind::Added, "+let speed = 2;"),
+            (LineKind::Context, " // fine"),
+        ]
+        .into_iter()
+        .map(|(kind, text)| DiffLine {
+            kind,
+            text: text.into(),
+            emph: Vec::new(),
+            syntax: None,
+        })
+        .collect();
+        crate::words::mark(&mut lines);
+        crate::syntax::mark(&mut lines, "a.rs", || true);
+        let style_of = |line: &DiffLine, piece: &str| -> Style {
+            let spans = diff_line(line, None).spans;
+            spans.iter().find(|s| s.content == piece).unwrap().style
+        };
+        let bar = |c| {
+            Style::new()
+                .fg(c)
+                .add_modifier(Modifier::REVERSED | Modifier::BOLD)
+        };
+        assert_eq!(style_of(&lines[2], "+"), bar(Color::Green));
+        assert_eq!(style_of(&lines[1], "-"), bar(Color::Red));
+        // Keywords take their color; the removed side is dimmed.
+        assert_eq!(style_of(&lines[2], "let").fg, Some(Color::Magenta));
+        let old_let = style_of(&lines[1], "let");
+        assert_eq!(old_let.fg, Some(Color::Magenta));
+        assert!(old_let.add_modifier.contains(Modifier::DIM));
+        // The changed number still stands out, over its syntax color.
+        let two = style_of(&lines[2], "2");
+        assert_eq!(two.fg, Some(Color::Yellow));
+        assert!(two.add_modifier.contains(Modifier::REVERSED));
+        // Context has no bar, and comments are gray.
+        assert_eq!(style_of(&lines[3], " "), Style::new());
+        assert_eq!(style_of(&lines[3], "// fine").fg, Some(Color::DarkGray));
+    }
+
+    #[test]
     fn diff_lines_map_to_lines_of_the_new_file() {
         use crate::app::line_at;
         let diff: Vec<DiffLine> = [
@@ -1193,6 +1293,7 @@ mod tests {
             kind,
             text: text.into(),
             emph: Vec::new(),
+            syntax: None,
         })
         .collect();
         let at = |top| line_at(&diff, top, false);

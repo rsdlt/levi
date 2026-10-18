@@ -7,6 +7,14 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+### Added
+
+- Syntax colors in the diff, by language, in your terminal's own 16 colors so they follow its
+  theme. A solid green or red bar marks added and removed lines, removed code is dimmed, and
+  changed words and `/c` matches still stand out. Files in unknown languages look as before.
+  Diffs still show at once; colors arrive a moment later, and a huge diff never holds up the
+  next one.
+
 ## [0.14.1] - 2026-10-17
 
 ### Fixed

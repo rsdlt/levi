@@ -577,6 +577,8 @@ pub struct DiffLine {
     pub text: String,
     /// Byte ranges of `text` that changed within the line (see `words`).
     pub emph: Vec<Range<usize>>,
+    /// Syntax colors of a code line, when its language is known (see `syntax`).
+    pub syntax: Option<crate::syntax::Colors>,
 }
 
 /// Classifies each line of `diff`'s output, expanding tabs for display, and
@@ -587,6 +589,7 @@ pub fn parse_diff(text: &str) -> Vec<DiffLine> {
         kind,
         text: raw.replace('\t', "    ").replace('\r', ""),
         emph: Vec::new(),
+        syntax: None,
     };
     // The header ends at the first blank line; the message follows.
     let mut in_message = false;
