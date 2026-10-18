@@ -1,0 +1,31 @@
+id = "rsdlt.levi"
+name = "levi"
+version = "0.1.0"
+# 0.7.4 added popup panes; 0.8.0 resolves relative commands from the plugin root.
+min_herdr_version = "0.8.0"
+description = "Find a commit in levi and hand it to your agent: prefix+l, pick, then ask."
+platforms = ["linux", "macos"]
+
+# Opens the popup over the agent you're talking to.
+[[actions]]
+id = "pick"
+title = "levi: find a commit for this agent"
+contexts = ["pane"]
+command = ["sh", "./levi-herdr.sh", "open"]
+
+# levi itself. On Enter, the reference to what you picked goes into the agent's
+# input, unsent, for you to finish the question.
+[[panes]]
+id = "pick"
+title = "levi"
+placement = "popup"
+width = "90%"
+height = "85%"
+command = ["sh", "./levi-herdr.sh", "pick"]
+
+# Bind it in herdr's config.toml (plugins can't bind keys themselves):
+#
+#   [[keys.command]]
+#   key = "prefix+l"
+#   type = "plugin_action"
+#   command = "rsdlt.levi.pick"

@@ -12,6 +12,9 @@ the search commands, the sha printed on stdout and the exit codes.
 - `levi --pick-context`: Enter prints a one-line reference to what's on screen instead of the
   sha, such as `commit d3a93ab ("Stack the lists"), src/ui.rs lines 27-40`, with the lines in
   view or under a drag selection. Made for handing a find to a person or an agent.
+- A [herdr](https://herdr.dev) plugin (`herdr plugin install rsdlt/levi/herdr`): from your
+  agent's pane, a key opens levi over it in the agent's repository, and what you pick lands in
+  the agent's input, unsent, for you to finish the question.
 
 ## [0.15.0] - 2026-10-18
 

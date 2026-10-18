@@ -138,6 +138,32 @@ Orders go the other way too. Found the culprit in levi? `C-y` copies its sha and
 the diff copies the code, ready to paste into the agent's chat with whatever you want done
 about it.
 
+### With herdr
+
+In [herdr](https://herdr.dev), levi reports straight to your agent. Install the plugin, then
+bind a key in herdr's `config.toml`:
+
+```sh
+herdr plugin install rsdlt/levi/herdr
+```
+
+```toml
+[[keys.command]]
+key = "prefix+l"
+type = "plugin_action"
+command = "rsdlt.levi.pick"
+```
+
+In your agent's pane, press `prefix l`. levi opens over it, in the agent's repository. Find the
+commit, scroll to the lines you mean (or drag over them), and press `Enter`. levi closes and
+types the reference into the agent's input, unsent:
+
+```
+In commit d3a93ab ("Stack the lists above the diff on narrow terminals"), src/ui.rs lines 27-40:
+```
+
+Finish the question and send it. Levi did the scouting; the agent only has to listen.
+
 ## Joint operations
 
 `C-o` opens the file in your editor at the line you're reading. Quit the editor and levi waits

@@ -304,8 +304,11 @@ next commit (killing its git), and late messages from old generations are droppe
 - `--all` branches.
 - Working-tree pseudo-commit at the top of column a.
 - Optional `delta` piping / syntax highlighting.
-- Sending what's on screen to a coding agent. Three shapes, in order of preference:
-  - **`levi --focus` (agents pull).** A running levi keeps a small note of what it shows: commit,
+- Sending what's on screen to a coding agent. Done for herdr users: `levi --pick-context` plus
+  the herdr plugin in `herdr/`, which types the pick into the agent's input (herdr can send
+  text to an agent pane, which no agent offers on its own). Kept for the record, the shapes
+  considered before:
+  - **`levi --focus` (agents pull).** Superseded by the herdr plugin. A running levi keeps a small note of what it shows: commit,
     file, the lines in view and any drag selection, rewritten only when they change (e.g. under
     `.git/`) and removed on exit. `levi --focus` prints it, so "look at what I have open in levi"
     works with any agent that runs commands, in the session you already have. Same model as
