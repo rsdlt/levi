@@ -7,6 +7,8 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-18
+
 ### Added
 
 - `levi --pick-context`: Enter prints a one-line reference to what's on screen instead of the
@@ -214,7 +216,8 @@ First release.
 - `--help` and `--version`.
 - `cargo deny` configuration for license, advisory and source checks.
 
-[Unreleased]: https://github.com/rsdlt/levi/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/rsdlt/levi/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/rsdlt/levi/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/rsdlt/levi/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/rsdlt/levi/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/rsdlt/levi/compare/v0.13.0...v0.14.0
