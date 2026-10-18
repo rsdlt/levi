@@ -7,18 +7,18 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-17
+
 ### Added
 
 - `levi --filter '<query>' [revision]` runs the search without the TUI, like `fzf --filter`, and
   prints `<sha> <subject>` per match, best first. For scripts and coding agents: the full query
   syntax, `/c` and `/r` included. It exits 1 when nothing matches.
-
 - `Ctrl-O` opens the selected file in your editor at the line you're reading, and levi carries on
   when you quit. Inside Neovim's terminal it opens in a new tab of that Neovim instead of nesting
   one. `$VISUAL`, then `$EDITOR`, then `vi`; Helix, Zed, Sublime and VS Code get the line their way.
   A file that's no longer in the working tree opens read-only as it was in that commit, or just
   before it for a file the commit deletes.
-
 - A README recipe for Neovim: levi in a floating window, the picked commit shown in a new tab.
 
 ### Changed
@@ -178,7 +178,8 @@ First release.
 - `--help` and `--version`.
 - `cargo deny` configuration for license, advisory and source checks.
 
-[Unreleased]: https://github.com/rsdlt/levi/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/rsdlt/levi/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/rsdlt/levi/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/rsdlt/levi/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/rsdlt/levi/compare/v0.11.2...v0.12.0
 [0.11.2]: https://github.com/rsdlt/levi/compare/v0.11.1...v0.11.2
