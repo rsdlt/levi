@@ -43,7 +43,11 @@ Sleep 300ms
 Down
 Sleep 300ms
 Down
-Sleep 2.5s
+Sleep 2s
+
+# Ctrl-Y copies the commit's sha and levi stays open; the status line says so.
+Ctrl+Y
+Sleep 2s
 
 # /c finds the commit whose diff added or removed the text, and jumps to it.
 Escape

@@ -8,7 +8,7 @@ A git diff viewer that does exactly one thing: browse the commits on your branch
 one touched, and their diffs, with fzf-style search on top. Nothing else. Captain Levi doesn't
 carry gear he won't use.
 
-![levi browsing its own history: fuzzy search, a diff with changed words marked, /c finding the commit that added a line, and Enter handing the sha to git show](docs/demo.gif)
+![levi browsing its own history: fuzzy search, a diff with changed words marked, Ctrl-Y copying a sha, /c finding the commit that added a line, and Enter handing the sha to git show](docs/demo.gif)
 
 Named in honor of humanity's strongest soldier: **small, swift and precise.**
 
