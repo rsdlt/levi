@@ -17,6 +17,8 @@ the search commands, the sha printed on stdout and the exit codes.
   when you quit. Inside Neovim's terminal it opens in a new tab of that Neovim instead of nesting
   one. `$VISUAL`, then `$EDITOR`, then `vi`; Helix, Zed, Sublime and VS Code get the line their way.
 
+- A README recipe for Neovim: levi in a floating window, the picked commit shown in a new tab.
+
 ### Changed
 
 - `Shift-↑/↓` hunk jumps carry on across files: past a file's last hunk, the next file opens at

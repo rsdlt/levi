@@ -149,6 +149,44 @@ or remove `<text>` (literal, smart case), and `/r` searches the reflog. It print
 `<sha> <subject>`, best match first. Then read one with `git show <sha>`.
 ```
 
+## Joint operations
+
+`Ctrl-O` opens the file you're reading in your editor, at the line on top of the diff, and levi
+picks up where it was when you quit. Inside Neovim's terminal he doesn't start a second Neovim:
+the file opens in a new tab of the one you're in, and levi waits in his.
+
+For Neovim, this puts levi in a floating window on `<leader>gl`; picking a commit with `Enter`
+shows it in a new tab:
+
+```lua
+-- levi in a floating window (Neovim 0.11+). Enter on a commit shows it in a new tab;
+-- Ctrl-O inside levi opens files in this Neovim.
+vim.keymap.set("n", "<leader>gl", function()
+  local picked = vim.fn.tempname()
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[buf].bufhidden = "wipe"
+  local width, height = math.floor(vim.o.columns * 0.9), math.floor(vim.o.lines * 0.85)
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = "editor", border = "rounded", width = width, height = height,
+    col = math.floor((vim.o.columns - width) / 2), row = math.floor((vim.o.lines - height) / 2),
+  })
+  -- levi draws on stderr, so its stdout, the picked sha, can go to a file.
+  vim.fn.jobstart("levi > " .. vim.fn.shellescape(picked), {
+    term = true,
+    on_exit = function(_, code)
+      if vim.api.nvim_win_is_valid(win) then vim.api.nvim_win_close(win, true) end
+      local sha = code == 0 and vim.fn.readfile(picked)[1]
+      vim.fn.delete(picked)
+      if not sha then return end
+      vim.cmd("tabnew | setlocal buftype=nofile bufhidden=wipe filetype=git")
+      vim.api.nvim_buf_set_lines(0, 0, -1, false, vim.fn.systemlist({ "git", "show", sha }))
+      -- Or, with diffview.nvim: vim.cmd("DiffviewOpen " .. sha .. "^!")
+    end,
+  })
+  vim.cmd.startinsert()
+end, { desc = "levi: browse commits" })
+```
+
 ## Field report
 
 - **Swift.** It opens instantly on huge repositories: history loads on every core at once
