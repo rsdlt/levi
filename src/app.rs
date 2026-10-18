@@ -244,6 +244,8 @@ pub struct App {
     pub rev: Option<String>,
     /// Draw without colors, for `NO_COLOR` (https://no-color.org).
     pub no_color: bool,
+    /// Soft backgrounds for changed lines, when the terminal allows them.
+    pub tints: Option<crate::tint::Tints>,
     /// The running or finished `/c` search, if the query has one.
     pub code: Option<CodeSearch>,
     pub focus: Focus,
@@ -305,6 +307,7 @@ impl App {
             source: Source::Log,
             rev: None,
             no_color: false,
+            tints: None,
             code: None,
             focus: Focus::Commits,
             commit_idx: 0,

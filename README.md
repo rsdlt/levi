@@ -205,7 +205,9 @@ end, { desc = "levi: browse commits" })
   an edited line only the words that changed are lit, like git's `diff-highlight`. No squinting
   at two lines to find the one character that moved. Code is colored by language in your
   terminal's own 16 colors, so it follows your theme, dark or light; a solid green or red bar
-  marks what was added or removed.
+  marks what was added or removed. On a truecolor terminal that tells him its background, like
+  Ghostty, changed lines also get a soft green or red tint, mixed from that background so it
+  suits the theme.
 - **Clean.** It uses your own `git`, so your config (rename detection, diff algorithm) applies.
   It doesn't touch your repository, and it leaves your terminal exactly as it found it, even if
   it crashes. He'd never leave a mess.

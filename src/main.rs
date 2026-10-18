@@ -5,6 +5,7 @@ mod filter;
 mod git;
 mod query;
 mod syntax;
+mod tint;
 mod ui;
 mod words;
 mod worker;
@@ -218,6 +219,10 @@ fn try_main(rev: Option<String>) -> Result<Exit> {
 
 fn run(terminal: &mut Tui, app: &mut App, root: PathBuf) -> Result<()> {
     syntax::warm_up();
+    // Before the input thread starts: the terminal's answer comes back as input.
+    if !app.no_color {
+        app.tints = tint::detect();
+    }
     let (tx, rx) = mpsc::channel();
     let input = worker::spawn_input(tx.clone());
     let rev = app.rev.clone().unwrap_or_else(|| "HEAD".into());

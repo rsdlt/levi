@@ -621,6 +621,7 @@ name = "levi-git"
 version = "0.14.1"
 dependencies = [
  "anyhow",
+ "libc",
  "nucleo-matcher",
  "ratatui",
  "syntect",

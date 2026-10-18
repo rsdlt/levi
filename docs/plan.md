@@ -43,7 +43,7 @@ cut mid-hint. One row, always on: no toggle key, since every printable key belon
 | 4 | Uncommitted changes | **Out for now.** No working-tree pseudo-commit. |
 | 5 | Git backend | Shell out to the `git` CLI (no `git2`/`gix`): respects user config, no C build, small binary. |
 | 6 | Fuzzy matching | `nucleo-matcher` (fzf-compatible syntax: smart case, `^`, `$`, `'`, `!`). |
-| 7 | Diff rendering | The commit message on top, code in syntax colors (the terminal's 16, one fixed mapping) with a green/red `+`/`-` bar and removed lines dimmed, changed words in reverse video (see Diff pane). Files in unknown languages keep plain coloring (`+` green, `-` red); `@@` cyan, headers dim. Syntax colors were out of scope at first, and came in once reading a big repo under heavy agent-driven change showed how much they matter. No themes, no settings, no per-language tweaks. |
+| 7 | Diff rendering | The commit message on top, code in syntax colors (the terminal's 16, one fixed mapping) with a green/red `+`/`-` bar and removed lines dimmed, changed words in reverse video (see Diff pane). Where the terminal shows truecolor and gives its background, changed rows also get a soft tint mixed from it, and changed words a stronger one. Files in unknown languages keep plain coloring (`+` green, `-` red); `@@` cyan, headers dim. Syntax colors were out of scope at first, and came in once reading a big repo under heavy agent-driven change showed how much they matter. No themes, no settings, no per-language tweaks. |
 
 ## Git commands
 
@@ -149,6 +149,15 @@ its authors call complete; `deny.toml` records the exception.
   request and gives way, keeping up to 16 interrupted diffs to finish when idle. A 1 MiB budget
   per diff (about 30,000 lines, a second) and a 1,000-byte cap per line (minified code) bound
   the work. Grammars load in the background at startup.
+- **Tints** (`src/tint.rs`). On a truecolor terminal (`COLORTERM=truecolor`/`24bit`) without
+  `NO_COLOR`, levi asks for the background at startup, after raw mode and before the input
+  thread (the answer comes back as input): OSC 11, then DA1, which every terminal answers, so
+  a terminal that ignores OSC 11 costs no wait; 100 ms at most. Both go out on stderr, never
+  stdout (`$(levi)`). The reply is read from `/dev/tty` with `select`: macOS's `poll` doesn't
+  support terminals and reports them readable at once, which blocked the read until a key came
+  and swallowed it. Added and removed rows get 13% green or red mixed into that background,
+  across the whole row; changed words get 32% instead of reverse video. No answer, no tints:
+  the look is as without them.
 - **Changed words** (`src/words.rs`). In a block of removed lines followed by added ones, pairs
   are taken in order (1st `-` with 1st `+`, …) and compared by token (words, whitespace runs,
   single punctuation): shared ends are trimmed, the middle goes through an LCS. Changed tokens

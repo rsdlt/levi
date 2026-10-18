@@ -13,6 +13,7 @@ use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 use crate::app::{App, DiffView, Focus, columns};
 use crate::git::{DiffLine, LineKind, Status};
 use crate::query::{Source, find_code};
+use crate::tint::Tints;
 
 const ACCENT: Color = Color::Cyan;
 
@@ -534,7 +535,7 @@ fn draw_diff(frame: &mut Frame, app: &mut App, area: Rect) {
             .iter()
             .skip(app.diff_scroll)
             .take(app.diff_height)
-            .map(|l| diff_line(l, pattern))
+            .map(|l| diff_line(l, pattern, app.tints))
             .collect(),
         DiffView::Failed(err) => vec![Line::styled(err, Color::Red)],
         DiffView::Loading => vec![Line::styled("loading…", Style::new().dim())],
@@ -546,7 +547,29 @@ fn draw_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     let column = app.diff_column.min(u16::MAX as usize) as u16;
     frame.render_widget(Paragraph::new(lines).block(block).scroll((0, column)), area);
+    tint_rows(frame.buffer_mut(), app, inner);
     mark_text(frame.buffer_mut(), app, inner);
+}
+
+/// Gives added and removed rows their soft background, all the way across,
+/// wherever nothing else (changed words, a `/c` match) already set one.
+fn tint_rows(buf: &mut Buffer, app: &App, inner: Rect) {
+    let (Some(tints), DiffView::Ready(lines)) = (app.tints, app.diff()) else {
+        return;
+    };
+    for (y, line) in (inner.y..inner.bottom()).zip(lines.iter().skip(app.diff_scroll)) {
+        let bg = match line.kind {
+            LineKind::Added => tints.added,
+            LineKind::Removed => tints.removed,
+            _ => continue,
+        };
+        for x in inner.x..inner.right() {
+            let cell = &mut buf[(x, y)];
+            if cell.bg == Color::Reset {
+                cell.bg = bg;
+            }
+        }
+    }
 }
 
 /// Shows the text dragged over in the diff in reverse video.
@@ -578,9 +601,10 @@ fn mark_text(buf: &mut Buffer, app: &App, inner: Rect) {
 /// A diff line with its changed words in reverse video, like `diff-highlight`,
 /// and every occurrence of the code-search text marked on top.
 /// A diff line's spans, in layers: its base look (plain green/red, or syntax
-/// colors when its language is known), then changed words in reverse video,
-/// then `/c` matches on top.
-fn diff_line<'a>(line: &'a DiffLine, pattern: Option<&str>) -> Line<'a> {
+/// colors when its language is known), then changed words (a stronger tint of
+/// the line's background with `tints`, or else reverse video), then `/c`
+/// matches on top.
+fn diff_line<'a>(line: &'a DiffLine, pattern: Option<&str>, tints: Option<Tints>) -> Line<'a> {
     let text = line.text.as_str();
     let base = line_style(line.kind);
     let found = pattern.map_or_else(Vec::new, |p| find_code(text, p));
@@ -618,10 +642,18 @@ fn diff_line<'a>(line: &'a DiffLine, pattern: Option<&str>) -> Line<'a> {
                     }
                 }
             };
+            let words = tints.and_then(|t| match line.kind {
+                LineKind::Added => Some(t.added_words),
+                LineKind::Removed => Some(t.removed_words),
+                _ => None,
+            });
             let style = if within(&found, at) {
                 under.patch(code_match())
             } else if within(&line.emph, at) {
-                under.add_modifier(Modifier::REVERSED)
+                match words {
+                    Some(bg) if at > 0 => under.bg(bg),
+                    _ => under.add_modifier(Modifier::REVERSED),
+                }
             } else {
                 under
             };
@@ -1249,7 +1281,7 @@ mod tests {
         crate::words::mark(&mut lines);
         crate::syntax::mark(&mut lines, "a.rs", || true);
         let style_of = |line: &DiffLine, piece: &str| -> Style {
-            let spans = diff_line(line, None).spans;
+            let spans = diff_line(line, None, None).spans;
             spans.iter().find(|s| s.content == piece).unwrap().style
         };
         let bar = |c| {
@@ -1271,6 +1303,53 @@ mod tests {
         // Context has no bar, and comments are gray.
         assert_eq!(style_of(&lines[3], " "), Style::new());
         assert_eq!(style_of(&lines[3], "// fine").fg, Some(Color::DarkGray));
+    }
+
+    #[test]
+    fn tints_color_changed_rows_all_the_way_across() {
+        let repo = Repo::new();
+        repo.write("a.rs", "// keep\nlet x = foo(1, a);\n");
+        repo.commit("first");
+        repo.write("a.rs", "// keep\nlet x = foo(2, a);\n");
+        repo.commit("second");
+        let mut app = loaded(&repo);
+        let tints = Tints::over((0x1a, 0x1b, 0x26));
+        app.tints = Some(tints);
+        type_str(&mut app, "/c foo");
+        serve_code(&mut app, &repo);
+        serve_diffs(&mut app, &repo);
+        render(&mut app);
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let diff = app.panes[2];
+        let row_of = |text: &str| {
+            (diff.y..diff.bottom())
+                .find(|&y| {
+                    let row: String = (diff.x..diff.right())
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect();
+                    row.contains(text)
+                })
+                .unwrap()
+        };
+        let (added, removed, context) = (row_of("+let x"), row_of("-let x"), row_of(" // keep"));
+        let bg = |x: u16, y: u16| buf[(x, y)].bg;
+        let (left, right) = (diff.x + 1, diff.right() - 2);
+        // Across the row, past the end of the text.
+        assert_eq!(
+            (bg(left + 3, added), bg(right, added)),
+            (tints.added, tints.added)
+        );
+        assert_eq!(bg(right, removed), tints.removed);
+        assert_eq!(bg(right, context), Color::Reset, "context isn't tinted");
+        // The changed number gets the stronger tint instead of reverse video.
+        let two = left + "+let x = foo(".len() as u16;
+        assert_eq!(buf[(two, added)].symbol(), "2");
+        assert_eq!(bg(two, added), tints.added_words);
+        assert!(!buf[(two, added)].modifier.contains(Modifier::REVERSED));
+        // A /c match keeps its own color.
+        assert_eq!(bg(two - 4, added), Color::Yellow);
     }
 
     #[test]

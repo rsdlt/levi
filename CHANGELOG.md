@@ -14,6 +14,10 @@ the search commands, the sha printed on stdout and the exit codes.
   changed words and `/c` matches still stand out. Files in unknown languages look as before.
   Diffs still show at once; colors arrive a moment later, and a huge diff never holds up the
   next one.
+- Soft green and red backgrounds behind added and removed lines, on truecolor terminals that
+  report their background (Ghostty, iTerm2, kitty, WezTerm and most modern ones). The tints are
+  mixed from that background, so they suit dark and light themes alike; changed words get a
+  stronger tint. Elsewhere, and with `NO_COLOR`, there are none.
 
 ## [0.14.1] - 2026-10-17
 
