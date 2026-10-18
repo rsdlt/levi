@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo.svg" width="160" alt="levi: two crossed blades over a git commit graph">
+</p>
+
 # levi
 
 **The fastest blade for your git history. Fuzzy search for you, plain text for your agents.**
