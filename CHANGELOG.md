@@ -7,6 +7,8 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-18
+
 ### Added
 
 - Syntax colors in the diff, by language, in your terminal's own 16 colors so they follow its
@@ -18,6 +20,11 @@ the search commands, the sha printed on stdout and the exit codes.
   report their background (Ghostty, iTerm2, kitty, WezTerm and most modern ones). The tints are
   mixed from that background, so they suit dark and light themes alike; changed words get a
   stronger tint. Elsewhere, and with `NO_COLOR`, there are none.
+
+### Changed
+
+- A shorter README, with a section on working with coding agents. The Neovim floating-window
+  recipe moved to `docs/neovim.md`, and the maintainer notes to `CONTRIBUTING.md`.
 
 ## [0.14.1] - 2026-10-17
 
@@ -198,7 +205,8 @@ First release.
 - `--help` and `--version`.
 - `cargo deny` configuration for license, advisory and source checks.
 
-[Unreleased]: https://github.com/rsdlt/levi/compare/v0.14.1...HEAD
+[Unreleased]: https://github.com/rsdlt/levi/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/rsdlt/levi/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/rsdlt/levi/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/rsdlt/levi/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/rsdlt/levi/compare/v0.12.0...v0.13.0
