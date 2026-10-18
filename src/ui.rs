@@ -1394,6 +1394,92 @@ mod tests {
     }
 
     #[test]
+    fn diff_rows_map_to_a_range_of_file_lines() {
+        use crate::app::lines_in;
+        let diff: Vec<DiffLine> = [
+            (LineKind::Meta, "commit 1234"),
+            (LineKind::Hunk, "@@ -10,4 +12,5 @@"),
+            (LineKind::Context, " a"),
+            (LineKind::Removed, "-b"),
+            (LineKind::Added, "+c"),
+            (LineKind::Added, "+d"),
+            (LineKind::Context, " e"),
+        ]
+        .into_iter()
+        .map(|(kind, text)| DiffLine {
+            kind,
+            text: text.into(),
+            emph: Vec::new(),
+            syntax: None,
+        })
+        .collect();
+        // New side: a=12, c=13, d=14, e=15; the removed line has none.
+        assert_eq!(lines_in(&diff, 0..=6, false), Some((12, 15)));
+        assert_eq!(lines_in(&diff, 4..=5, false), Some((13, 14)));
+        assert_eq!(lines_in(&diff, 3..=3, false), None, "only a removed line");
+        assert_eq!(lines_in(&diff, 0..=1, false), None, "no code at all");
+        // Old side, for a deleted file: a=10, b=11, e=12.
+        assert_eq!(lines_in(&diff, 0..=6, true), Some((10, 12)));
+    }
+
+    #[test]
+    fn pick_context_names_what_is_on_screen() {
+        let repo = Repo::new();
+        let lines: Vec<String> = (1..=40).map(|n| format!("line {n}")).collect();
+        repo.write("src/a.rs", &(lines.join("\n") + "\n"));
+        repo.commit("plain");
+        let mut changed = lines.clone();
+        changed[29] = "attack".into();
+        repo.write("src/a.rs", &(changed.join("\n") + "\n"));
+        repo.commit("change line 30");
+        repo.git(&["commit", "-q", "--allow-empty", "-m", "nothing"]);
+        let mut app = loaded(&repo);
+        app.pick_context = true;
+        serve_diffs(&mut app, &repo);
+        let pick = |app: &mut App| {
+            app.exit = None;
+            press(app, KeyCode::Enter);
+            match app.exit.take() {
+                Some(Exit::Pick(text)) => text,
+                _ => panic!("no pick"),
+            }
+        };
+        let short = |app: &App, n: usize| app.commits[n].short.clone();
+        // A commit without files: just the commit.
+        render(&mut app);
+        assert_eq!(
+            pick(&mut app),
+            format!("commit {} (\"nothing\")", short(&app, 0))
+        );
+
+        // A file: its path and the lines in view. The hunk runs 27-33, but in
+        // this short terminal 33 is below the bottom of the pane.
+        press(&mut app, KeyCode::Down);
+        serve_diffs(&mut app, &repo);
+        render(&mut app);
+        let one = short(&app, 1);
+        assert_eq!(
+            pick(&mut app),
+            format!("commit {one} (\"change line 30\"), src/a.rs lines 27-32")
+        );
+
+        // A drag over the diff narrows it to the selected lines.
+        let diff = app.panes[2];
+        let DiffView::Ready(text) = app.diff() else {
+            panic!("no diff");
+        };
+        let row = text.iter().position(|l| l.text == "+attack").unwrap() as u16;
+        let y = diff.y + 1 + row - app.diff_scroll as u16;
+        mouse(&mut app, LEFT, diff.x + 2, y);
+        mouse(&mut app, DRAG, diff.x + 4, y);
+        mouse(&mut app, UP, diff.x + 4, y);
+        assert_eq!(
+            pick(&mut app),
+            format!("commit {one} (\"change line 30\"), src/a.rs line 30")
+        );
+    }
+
+    #[test]
     fn ctrl_o_asks_to_open_the_file_at_the_line_on_top() {
         let repo = Repo::new();
         let lines: Vec<String> = (1..=40).map(|n| format!("line {n}")).collect();

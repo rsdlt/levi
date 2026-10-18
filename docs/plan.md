@@ -246,6 +246,12 @@ All five steps are done.
   are done. Then each hit prints as `<full sha> <subject>` (the reflog action under `/r`), best
   first. Exit 0 with matches, 1 without, 2 on errors, like grep, so agents and scripts can tell
   "nothing" from "broken". A closed pipe ends the output quietly.
+- `--pick-context` (with or without a revision) changes only what Enter prints: one line,
+  `commit <short> ("<subject or reflog action>")`, then `, <path>` when a file is selected,
+  then ` lines a-b` (or ` line n`): the file lines of the code rows in view, or of the drag
+  selection, on the new side (the old side for a deleted file), mapped from the hunk headers.
+  Rows with no code (message, headers) add no lines. A key clears the selection after it's
+  handled, so Enter still sees it.
 - Integration tests in `tests/cli.rs` run the real binary for every pre-TUI path.
 
 ## Commands

@@ -75,13 +75,18 @@ Exits 130 when quit without picking a commit, like fzf. Set NO_COLOR for no colo
 scripts and coding agents. It prints `<sha> <subject>` per match, best first,
 and exits 1 when nothing matches:
   levi --filter 'parse.rs /c let x ='   which commits changed that line there
+
+--pick-context makes Enter print a reference to what's on screen instead of the
+sha, for handing to a person or an agent:
+  commit d3a93ab (\"Stack the lists above the diff\"), src/ui.rs lines 27-40
 ";
 
 /// What the command line asks for.
 enum Cli {
     Help,
     Version,
-    Browse(Option<String>),
+    /// The revision, and whether Enter prints a reference instead of the sha.
+    Browse(Option<String>, bool),
     Filter(String, Option<String>),
 }
 
@@ -93,10 +98,12 @@ fn parse_args(args: &[String]) -> Result<Cli, String> {
         [flag] if flag == "-V" || flag == "-v" || flag == "--version" => return Ok(Cli::Version),
         _ => {}
     }
-    let (mut rev, mut query) = (None, None);
+    let (mut rev, mut query, mut context) = (None, None, false);
     let mut args = args.iter();
     while let Some(arg) = args.next() {
-        if let Some(q) = arg.strip_prefix("--filter=") {
+        if arg == "--pick-context" {
+            context = true;
+        } else if let Some(q) = arg.strip_prefix("--filter=") {
             query = Some(q.to_owned());
         } else if arg == "--filter" || arg == "-f" {
             query = Some(args.next().ok_or(format!("'{arg}' needs a query"))?.clone());
@@ -109,13 +116,13 @@ fn parse_args(args: &[String]) -> Result<Cli, String> {
     }
     Ok(match query {
         Some(query) => Cli::Filter(query, rev),
-        None => Cli::Browse(rev),
+        None => Cli::Browse(rev, context),
     })
 }
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let rev = match parse_args(&args) {
+    let (rev, context) = match parse_args(&args) {
         Ok(Cli::Help) => {
             print!("{HELP}");
             return ExitCode::SUCCESS;
@@ -124,7 +131,7 @@ fn main() -> ExitCode {
             println!("levi {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;
         }
-        Ok(Cli::Browse(rev)) => rev,
+        Ok(Cli::Browse(rev, context)) => (rev, context),
         Ok(Cli::Filter(query, rev)) => {
             return match print_matches(query, rev) {
                 Ok(true) => ExitCode::SUCCESS,
@@ -140,7 +147,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match try_main(rev) {
+    match try_main(rev, context) {
         Ok(Exit::Pick(sha)) => {
             println!("{sha}");
             ExitCode::SUCCESS
@@ -200,10 +207,11 @@ fn print_matches(query: String, rev: Option<String>) -> Result<bool> {
     Ok(!app.view.is_empty())
 }
 
-fn try_main(rev: Option<String>) -> Result<Exit> {
+fn try_main(rev: Option<String>, pick_context: bool) -> Result<Exit> {
     let root = git::preflight(&std::env::current_dir()?, rev.as_deref())?;
     let mut app = App::new();
     app.rev = rev;
+    app.pick_context = pick_context;
     app.no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
 
     if !io::stderr().is_terminal() {

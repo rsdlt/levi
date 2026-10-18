@@ -223,7 +223,7 @@ impl Focus {
 
 pub enum Exit {
     Quit,
-    /// Print this sha to stdout.
+    /// Print this to stdout: the sha, or with `--pick-context` a reference.
     Pick(String),
 }
 
@@ -244,6 +244,8 @@ pub struct App {
     pub rev: Option<String>,
     /// Draw without colors, for `NO_COLOR` (https://no-color.org).
     pub no_color: bool,
+    /// Enter prints a reference to what's on screen instead of the sha.
+    pub pick_context: bool,
     /// Soft backgrounds for changed lines, when the terminal allows them.
     pub tints: Option<crate::tint::Tints>,
     /// The running or finished `/c` search, if the query has one.
@@ -307,6 +309,7 @@ impl App {
             source: Source::Log,
             rev: None,
             no_color: false,
+            pick_context: false,
             tints: None,
             code: None,
             focus: Focus::Commits,
@@ -350,8 +353,10 @@ impl App {
                     self.settle();
                 }
                 self.notice = None;
-                self.selection = None;
                 self.handle_key(key);
+                // Any key ends a selection, once the key had a chance to use it
+                // (Enter with --pick-context names the selected lines).
+                self.selection = None;
             }
             Msg::Input(Event::Mouse(mouse)) => {
                 self.settle();
@@ -675,6 +680,39 @@ impl App {
         self.clipboard.take()
     }
 
+    /// What `--pick-context` prints on Enter: the commit, and when a file is
+    /// selected, its path and the lines in view (or under the drag selection),
+    /// on one line, for a person or an agent to follow:
+    /// `commit d3a93ab ("Stack the lists"), src/ui.rs lines 27-40`.
+    fn context(&self) -> Option<String> {
+        let commit = self.commit()?;
+        let text = commit
+            .reflog
+            .as_ref()
+            .map_or(&commit.subject, |r| &r.action);
+        let mut out = format!("commit {} (\"{text}\")", commit.short);
+        let Some(file) = self.file() else {
+            return Some(out);
+        };
+        out.push_str(&format!(", {}", file.path));
+        let DiffView::Ready(lines) = self.diff() else {
+            return Some(out);
+        };
+        let deleted = file.status == Status::Deleted;
+        let rows = match self.selection.and_then(|s| s.rows(Focus::Diff)) {
+            Some(rows) => rows,
+            None => self.diff_scroll..=self.diff_scroll + self.diff_height.max(1) - 1,
+        };
+        if let Some((first, last)) = lines_in(lines, rows, deleted) {
+            if first == last {
+                out.push_str(&format!(" line {first}"));
+            } else {
+                out.push_str(&format!(" lines {first}-{last}"));
+            }
+        }
+        Some(out)
+    }
+
     /// A file and line to open in an editor, if Ctrl-O asked for one. The main
     /// loop does it, since it owns the terminal.
     pub fn take_open(&mut self) -> Option<OpenRequest> {
@@ -812,8 +850,13 @@ impl App {
                 _ => self.notice = Some("no file to open".into()),
             },
             KeyCode::Enter => {
-                if let Some(commit) = self.commit() {
-                    self.exit = Some(Exit::Pick(commit.sha.clone()));
+                let picked = if self.pick_context {
+                    self.context()
+                } else {
+                    self.commit().map(|c| c.sha.clone())
+                };
+                if let Some(picked) = picked {
+                    self.exit = Some(Exit::Pick(picked));
                 }
             }
             KeyCode::Esc if self.query.is_empty() => self.exit = Some(Exit::Quit),
@@ -1096,6 +1139,46 @@ pub fn line_at(lines: &[DiffLine], top: usize, old: bool) -> Option<usize> {
         }
     }
     next.map(|n| n.saturating_sub(1).max(1))
+}
+
+/// The first and last file line that diff rows `rows` show, on the new side
+/// (or the old one, for `old`). None when those rows hold no code.
+pub fn lines_in(
+    lines: &[DiffLine],
+    rows: RangeInclusive<usize>,
+    old: bool,
+) -> Option<(usize, usize)> {
+    let this_side = if old {
+        LineKind::Removed
+    } else {
+        LineKind::Added
+    };
+    let mut next: Option<usize> = None;
+    let mut found: Option<(usize, usize)> = None;
+    for (i, l) in lines.iter().enumerate() {
+        if i > *rows.end() {
+            break;
+        }
+        match l.kind {
+            LineKind::Hunk => {
+                let marker = if old { " -" } else { " +" };
+                next = l.text.split_once(marker).and_then(|(_, rest)| {
+                    let digits = rest.split(|c: char| !c.is_ascii_digit()).next()?;
+                    digits.parse::<usize>().ok()
+                });
+            }
+            k if k == LineKind::Context || k == this_side => {
+                if let Some(n) = next {
+                    if rows.contains(&i) {
+                        found = Some(found.map_or((n, n), |(first, _)| (first, n)));
+                    }
+                    next = Some(n + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    found
 }
 
 /// A pane's area between its borders, if there's any.

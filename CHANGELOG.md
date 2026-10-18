@@ -7,6 +7,12 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+### Added
+
+- `levi --pick-context`: Enter prints a one-line reference to what's on screen instead of the
+  sha, such as `commit d3a93ab ("Stack the lists"), src/ui.rs lines 27-40`, with the lines in
+  view or under a drag selection. Made for handing a find to a person or an agent.
+
 ## [0.15.0] - 2026-10-18
 
 ### Added

@@ -170,6 +170,21 @@ fn without_a_terminal() {
 }
 
 #[test]
+fn pick_context_is_a_browse_flag() {
+    // Like plain levi, it needs a terminal; the flag itself is accepted.
+    let dir = repo_with_two_commits();
+    for args in [
+        &["--pick-context"][..],
+        &["--pick-context", "HEAD~1"],
+        &["HEAD~1", "--pick-context"],
+    ] {
+        let out = levi(dir.path(), args);
+        assert_eq!(out.status.code(), Some(1), "{args:?}");
+        assert!(stderr(&out).contains("needs a terminal"), "{args:?}");
+    }
+}
+
+#[test]
 fn one_revision_at_most() {
     let dir = repo_with_two_commits();
     let out = levi(dir.path(), &["main", "src/"]);
