@@ -7,6 +7,8 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-17
+
 ### Added
 
 - `Ctrl-Y` copies the selected commit's full sha to the clipboard and keeps levi open. It goes
@@ -157,7 +159,8 @@ First release.
 - `--help` and `--version`.
 - `cargo deny` configuration for license, advisory and source checks.
 
-[Unreleased]: https://github.com/rsdlt/levi/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/rsdlt/levi/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/rsdlt/levi/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/rsdlt/levi/compare/v0.11.2...v0.12.0
 [0.11.2]: https://github.com/rsdlt/levi/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/rsdlt/levi/compare/v0.11.0...v0.11.1
