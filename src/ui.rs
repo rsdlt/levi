@@ -939,7 +939,10 @@ mod tests {
         mouse(&mut app, UP, x + 3, bottom + 3);
         let copied = app.take_clipboard().unwrap();
         assert!(copied.starts_with("+alpha beta\n+gamma delta\n+line 1\n"));
-        assert!(copied.ends_with("\n+line 8\n+lin"), "the column under the pointer counts");
+        assert!(
+            copied.ends_with("\n+line 8\n+lin"),
+            "the column under the pointer counts"
+        );
     }
 
     #[test]
