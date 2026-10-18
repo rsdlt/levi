@@ -12,7 +12,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::text::Span;
 
 use crate::filter::{self, Filter, Hit};
-use crate::git::{Commit, DiffLine, FileChange, LineKind};
+use crate::git::{Commit, DiffLine, FileChange, LineKind, Status};
 use crate::query::{self, Source, find_code};
 
 /// Diffs kept in memory; older ones are refetched on demand.
@@ -138,6 +138,18 @@ pub enum Focus {
     Diff,
 }
 
+/// Ctrl-O's file: where it is in the working tree, and which commit to take
+/// it from if it isn't there anymore.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenRequest {
+    pub sha: String,
+    pub short: String,
+    pub path: String,
+    pub line: usize,
+    /// The commit deletes the file, so its last version is the parent's.
+    pub deleted: bool,
+}
+
 /// A place a hunk jump can land: the scroll that shows it, its line, and for a
 /// code match, the columns it spans.
 #[derive(Clone, Copy)]
@@ -260,7 +272,7 @@ pub struct App {
     /// Text waiting to go to the clipboard (see `take_clipboard`).
     clipboard: Option<String>,
     /// A file and line waiting to open in an editor (see `take_open`).
-    open: Option<(String, usize)>,
+    open: Option<OpenRequest>,
     /// A one-off message for the status line, like what was just copied.
     /// The next key or click clears it.
     pub notice: Option<String>,
@@ -662,7 +674,7 @@ impl App {
 
     /// A file and line to open in an editor, if Ctrl-O asked for one. The main
     /// loop does it, since it owns the terminal.
-    pub fn take_open(&mut self) -> Option<(String, usize)> {
+    pub fn take_open(&mut self) -> Option<OpenRequest> {
         self.open.take()
     }
 
@@ -778,15 +790,23 @@ impl App {
                     self.copy(commit.sha.clone(), notice);
                 }
             }
-            KeyCode::Char('o') if ctrl => match self.file() {
-                Some(file) => {
+            KeyCode::Char('o') if ctrl => match (self.commit(), self.file()) {
+                (Some(commit), Some(file)) => {
+                    // A file this commit deletes only has lines on the old side.
+                    let deleted = file.status == Status::Deleted;
                     let line = match self.diff() {
-                        DiffView::Ready(lines) => line_at(lines, self.diff_scroll),
+                        DiffView::Ready(lines) => line_at(lines, self.diff_scroll, deleted),
                         _ => None,
                     };
-                    self.open = Some((file.path.clone(), line.unwrap_or(1)));
+                    self.open = Some(OpenRequest {
+                        sha: commit.sha.clone(),
+                        short: commit.short.clone(),
+                        path: file.path.clone(),
+                        line: line.unwrap_or(1),
+                        deleted,
+                    });
                 }
-                None => self.notice = Some("no file to open".into()),
+                _ => self.notice = Some("no file to open".into()),
             },
             KeyCode::Enter => {
                 if let Some(commit) = self.commit() {
@@ -1046,23 +1066,29 @@ impl App {
     }
 }
 
-/// The line of the new file that diff line `top` shows, or the first one after
-/// it that does: what an editor should open at when the diff is scrolled to
-/// `top`. A removed line maps to where it was. None before the first hunk's
-/// lines are past, e.g. with no hunks at all.
-pub fn line_at(lines: &[DiffLine], top: usize) -> Option<usize> {
+/// The line of the new file (or the old one, for `old`) that diff line `top`
+/// shows, or the first one after it that does: what an editor should open at
+/// when the diff is scrolled to `top`. A line only on the other side maps to
+/// where it would be. None with no hunks at all.
+pub fn line_at(lines: &[DiffLine], top: usize, old: bool) -> Option<usize> {
+    // `@@ -a,b +c,d @@`: the old side starts at line a, the new one at c.
+    let marker = if old { " -" } else { " +" };
+    let this_side = if old {
+        LineKind::Removed
+    } else {
+        LineKind::Added
+    };
     let mut next = None;
     for (i, l) in lines.iter().enumerate() {
         match l.kind {
-            // `@@ -a,b +c,d @@`: the new side starts at line c.
             LineKind::Hunk => {
-                next = l.text.split_once(" +").and_then(|(_, rest)| {
+                next = l.text.split_once(marker).and_then(|(_, rest)| {
                     let digits = rest.split(|c: char| !c.is_ascii_digit()).next()?;
                     digits.parse::<usize>().ok()
                 });
             }
-            LineKind::Added | LineKind::Context | LineKind::Removed if i >= top => return next,
-            LineKind::Added | LineKind::Context => next = next.map(|n| n + 1),
+            LineKind::Context | LineKind::Added | LineKind::Removed if i >= top => return next,
+            k if k == LineKind::Context || k == this_side => next = next.map(|n| n + 1),
             _ => {}
         }
     }

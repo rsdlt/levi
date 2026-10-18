@@ -1195,7 +1195,8 @@ mod tests {
             emph: Vec::new(),
         })
         .collect();
-        let at = |top| line_at(&diff, top);
+        let at = |top| line_at(&diff, top, false);
+        let old = |top| line_at(&diff, top, true);
         assert_eq!(at(0), Some(12), "above the first hunk: its first line");
         assert_eq!(
             (at(3), at(4), at(5), at(6), at(7)),
@@ -1203,7 +1204,13 @@ mod tests {
         );
         assert_eq!((at(8), at(9)), (Some(43), Some(43)));
         assert_eq!(at(50), Some(43), "past the end: the last line");
-        assert_eq!(line_at(&diff[..2], 0), None, "no hunks");
+        assert_eq!(line_at(&diff[..2], 0, false), None, "no hunks");
+        // The old side, for a deleted file: added lines map to where they'd be.
+        assert_eq!(
+            (old(0), old(3), old(4), old(5), old(7)),
+            (Some(10), Some(10), Some(11), Some(12), Some(12))
+        );
+        assert_eq!(old(9), Some(40));
     }
 
     #[test]
@@ -1232,7 +1239,12 @@ mod tests {
         serve_diffs(&mut app, &repo);
         // At the top of the diff, the hunk's first line: 3 of context before 30.
         ctrl_o(&mut app);
-        assert_eq!(app.take_open(), Some(("src/a.rs".into(), 27)));
+        let req = app.take_open().unwrap();
+        assert_eq!(
+            (req.path.as_str(), req.line, req.deleted),
+            ("src/a.rs", 27, false)
+        );
+        assert_eq!(req.sha, app.commit().unwrap().sha);
         // Scrolled to the change itself.
         app.diff_scroll = {
             let DiffView::Ready(diff) = app.diff() else {
@@ -1241,7 +1253,7 @@ mod tests {
             diff.iter().position(|l| l.text == "+attack").unwrap()
         };
         ctrl_o(&mut app);
-        assert_eq!(app.take_open(), Some(("src/a.rs".into(), 30)));
+        assert_eq!(app.take_open().map(|r| r.line), Some(30));
         assert_eq!(app.query, "", "not typed into the search");
     }
 

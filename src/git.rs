@@ -110,6 +110,13 @@ fn output(cmd: &mut Command) -> Result<Output> {
     })
 }
 
+/// The content of `path` as of commit `sha`, or as of its first parent when
+/// `before` (for a file the commit deletes).
+pub fn file_at(root: &Path, sha: &str, path: &str, before: bool) -> Result<Vec<u8>> {
+    let spec = format!("{sha}{}:{path}", if before { "^" } else { "" });
+    run(git(root).args(["cat-file", "blob", &spec]))
+}
+
 /// `--diff-merges` landed in git 2.31.
 const MIN_GIT: (u32, u32) = (2, 31);
 

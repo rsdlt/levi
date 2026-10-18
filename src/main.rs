@@ -58,7 +58,8 @@ Keys:
   Enter               print the selected sha and quit:  git show $(levi)
   C-y                 copy the selected commit's sha
   C-o                 open the file in $EDITOR at the line on top of the diff
-                      (in Neovim's terminal: a new tab in that Neovim)
+                      (in Neovim's terminal: a new tab in that Neovim); a file
+                      no longer in the working tree opens read-only from history
   C-w                 delete the last word of the query
   Esc                 clear the query, or quit
   C-c                 quit
@@ -238,8 +239,8 @@ fn run(terminal: &mut Tui, app: &mut App, root: PathBuf) -> Result<()> {
         if let Some(text) = app.take_clipboard() {
             clipboard::copy(&text);
         }
-        if let Some((path, line)) = app.take_open() {
-            let said = open(terminal, &input, &root, &path, line);
+        if let Some(req) = app.take_open() {
+            let said = open(terminal, &input, &root, &req);
             app.notice = (!said.is_empty()).then_some(said);
         }
         terminal.draw(|frame| ui::draw(frame, app))?;
@@ -263,28 +264,51 @@ fn run(terminal: &mut Tui, app: &mut App, root: PathBuf) -> Result<()> {
     Ok(())
 }
 
-/// Opens `path` (relative to `root`) at `line` and says how it went. In the
-/// Neovim levi runs inside, that's a new tab there; otherwise the editor gets
-/// the terminal until it quits, and levi carries on where it was.
-fn open(terminal: &mut Tui, input: &worker::Input, root: &Path, path: &str, line: usize) -> String {
-    let file = root.join(path);
-    if !file.is_file() {
-        return format!("{path} isn't in the working tree");
-    }
+/// Opens Ctrl-O's file at its line and says how it went. It's the working
+/// tree's copy when there is one. Otherwise it's the version from history (the
+/// commit's, or for a file the commit deletes, its parent's), opened read-only
+/// from a temporary file. In the Neovim levi runs inside, it opens in a new tab
+/// there; otherwise the editor gets the terminal until it quits, and levi
+/// carries on where it was.
+fn open(terminal: &mut Tui, input: &worker::Input, root: &Path, req: &app::OpenRequest) -> String {
+    let line = req.line;
+    let live = root.join(&req.path);
+    let (file, past) = if live.is_file() {
+        (live, None)
+    } else {
+        match editor::past_copy(root, req) {
+            Ok(copy) => (copy, Some(req)),
+            Err(e) => return format!("{e:#}"),
+        }
+    };
+    let what = match past {
+        None => format!("{}:{line}", req.path),
+        Some(r) if r.deleted => format!("{} as it was before {}, read-only", r.path, r.short),
+        Some(r) => format!(
+            "{} as of {}, read-only: it's not in the working tree",
+            r.path, r.short
+        ),
+    };
     if let Some(server) = editor::host_nvim() {
-        return match editor::open_in_nvim(&server, &file, line) {
-            Ok(()) => format!("opened {path}:{line} in a Neovim tab"),
+        // Neovim may still show the copy after levi is gone, so it stays.
+        return match editor::open_in_nvim(&server, &file, line, past.is_some()) {
+            Ok(()) => format!("opened {what} in a Neovim tab"),
             Err(e) => format!("{e:#}"),
         };
     }
     let editor = editor::editor();
     input.pause();
     restore();
-    let status = editor::command(&editor, root, path, line).status();
+    let target = file.to_string_lossy();
+    let status = editor::command(&editor, root, &target, line).status();
     let back = enter().and_then(|()| Ok(terminal.clear()?));
     input.resume();
+    if past.is_some() {
+        editor::remove_copy(&file);
+    }
     match (status, back) {
         (_, Err(e)) => format!("couldn't take the terminal back: {e:#}"),
+        (Ok(s), _) if s.success() && past.is_some() => format!("opened {what}"),
         (Ok(s), _) if s.success() => String::new(),
         (Ok(s), _) => format!("{editor} exited with {s}"),
         (Err(e), _) => format!("couldn't run {editor}: {e}"),

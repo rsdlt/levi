@@ -152,7 +152,9 @@ or remove `<text>` (literal, smart case), and `/r` searches the reflog. It print
 ## Joint operations
 
 `Ctrl-O` opens the file you're reading in your editor, at the line on top of the diff, and levi
-picks up where it was when you quit. Inside Neovim's terminal he doesn't start a second Neovim:
+picks up where it was when you quit. If the file is gone from your working tree, deleted or
+renamed since, he opens it read-only as it was in that commit (or just before, if that commit
+deleted it), so history stays one key away. Inside Neovim's terminal he doesn't start a second Neovim:
 the file opens in a new tab of the one you're in, and levi waits in his.
 
 For Neovim, this puts levi in a floating window on `<leader>gl`; picking a commit with `Enter`

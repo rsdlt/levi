@@ -1,22 +1,30 @@
 //! Opening a file at a line: in the Neovim levi runs inside, when it does, or
 //! else in `$VISUAL`/`$EDITOR`, which takes over the terminal until it quits.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
+
+use crate::app::OpenRequest;
+use crate::git;
 
 /// The Neovim whose terminal levi runs in, if any: it sets `$NVIM` there.
 pub fn host_nvim() -> Option<String> {
     std::env::var("NVIM").ok().filter(|s| !s.is_empty())
 }
 
-/// Opens `file` at `line` in a new tab of the Neovim at `server`. levi keeps
-/// running in its own tab.
-pub fn open_in_nvim(server: &str, file: &Path, line: usize) -> Result<()> {
+/// Opens `file` at `line` in a new tab of the Neovim at `server`, unmodifiable
+/// if `read_only`. levi keeps running in its own tab.
+pub fn open_in_nvim(server: &str, file: &Path, line: usize, read_only: bool) -> Result<()> {
     let file = file.to_str().context("the path isn't valid UTF-8")?;
+    let lock = if read_only {
+        " .. ' | setlocal nomodifiable'"
+    } else {
+        ""
+    };
     let expr = format!(
-        "execute('tabedit +{line} ' .. fnameescape({}))",
+        "execute('tabedit +{line} ' .. fnameescape({}){lock})",
         vim_string(file)
     );
     let out = Command::new("nvim")
@@ -28,6 +36,55 @@ pub fn open_in_nvim(server: &str, file: &Path, line: usize) -> Result<()> {
         bail!("nvim: {}", String::from_utf8_lossy(&out.stderr).trim());
     }
     Ok(())
+}
+
+/// Writes the file `req` asks for, as git has it in history, to a read-only
+/// temporary copy: the commit's version, or its parent's for a file the commit
+/// deletes. The copy keeps the file's name, so editors still recognize the
+/// language, under a directory named for the commit.
+pub fn past_copy(root: &Path, req: &OpenRequest) -> Result<PathBuf> {
+    // The full sha: a short one could collide between repositories.
+    let at = if req.deleted { "-parent" } else { "" };
+    let dir = std::env::temp_dir().join(format!("levi-{}{at}", req.sha));
+    let copy = dir.join(&req.path);
+    // The same file from the same commit is the same content.
+    if copy.is_file() {
+        return Ok(copy);
+    }
+    let content = git::file_at(root, &req.sha, &req.path, req.deleted).with_context(|| {
+        format!(
+            "{} isn't in the working tree, and git couldn't show it",
+            req.path
+        )
+    })?;
+    if let Some(parent) = copy.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&copy, content)?;
+    let mut perms = std::fs::metadata(&copy)?.permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&copy, perms)?;
+    Ok(copy)
+}
+
+/// Deletes a copy from `past_copy`, and the directories that only held it,
+/// quietly: it's only a temporary file.
+pub fn remove_copy(copy: &Path) {
+    if let Ok(meta) = std::fs::metadata(copy) {
+        let mut perms = meta.permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        let _ = std::fs::set_permissions(copy, perms);
+    }
+    let _ = std::fs::remove_file(copy);
+    let temp = std::env::temp_dir();
+    // `remove_dir` only removes empty directories, so this stops at the
+    // first one still holding something, and never goes past the temp dir.
+    for dir in copy.ancestors().skip(1) {
+        if !dir.starts_with(&temp) || dir == temp || std::fs::remove_dir(dir).is_err() {
+            break;
+        }
+    }
 }
 
 /// A Vim single-quoted string, in which only `'` needs escaping (doubled).
@@ -83,6 +140,49 @@ mod tests {
         assert_eq!(args("/usr/bin/vim -p", "a.rs", 3), ["+3", "a.rs"]);
         assert_eq!(args("hx", "a.rs", 3), ["a.rs:3"]);
         assert_eq!(args("code --wait", "a.rs", 3), ["--goto", "a.rs:3"]);
+    }
+
+    #[test]
+    fn past_copies_come_from_history_read_only() {
+        let repo = crate::testutil::Repo::new();
+        repo.write("src/ghost.rs", "one\ntwo\n");
+        repo.commit("add ghost");
+        repo.git(&["rm", "-q", "src/ghost.rs"]);
+        repo.commit("remove ghost");
+        let log = repo.log();
+        let (removed, added) = (&log[0], &log[1]);
+        let req = |commit: &crate::git::Commit, deleted| OpenRequest {
+            sha: commit.sha.clone(),
+            short: commit.short.clone(),
+            path: "src/ghost.rs".into(),
+            line: 2,
+            deleted,
+        };
+
+        // As of the commit that added it...
+        let copy = past_copy(repo.path(), &req(added, false)).unwrap();
+        assert_eq!(std::fs::read_to_string(&copy).unwrap(), "one\ntwo\n");
+        assert!(copy.ends_with("src/ghost.rs"), "keeps its name: {copy:?}");
+        assert!(std::fs::metadata(&copy).unwrap().permissions().readonly());
+        remove_copy(&copy);
+        let dir = copy.parent().unwrap().parent().unwrap();
+        assert!(
+            dir.file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("levi-")
+        );
+        assert!(!dir.exists(), "its directories go too");
+
+        // ...and, from the commit that deleted it, as it was just before.
+        let copy = past_copy(repo.path(), &req(removed, true)).unwrap();
+        assert_eq!(std::fs::read_to_string(&copy).unwrap(), "one\ntwo\n");
+        remove_copy(&copy);
+
+        // The commit that deleted it has no such file to show.
+        let err = past_copy(repo.path(), &req(removed, false)).unwrap_err();
+        assert!(format!("{err:#}").starts_with("src/ghost.rs isn't in the working tree"));
     }
 
     #[test]

@@ -16,6 +16,8 @@ the search commands, the sha printed on stdout and the exit codes.
 - `Ctrl-O` opens the selected file in your editor at the line you're reading, and levi carries on
   when you quit. Inside Neovim's terminal it opens in a new tab of that Neovim instead of nesting
   one. `$VISUAL`, then `$EDITOR`, then `vi`; Helix, Zed, Sublime and VS Code get the line their way.
+  A file that's no longer in the working tree opens read-only as it was in that commit, or just
+  before it for a file the commit deletes.
 
 - A README recipe for Neovim: levi in a floating window, the picked commit shown in a new tab.
 
