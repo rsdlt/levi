@@ -5,7 +5,8 @@
 > *Tch. Your history is filthy. Let's look at it properly.*
 
 levi browses the commits on your branch, the files each one touched, and their diffs. Type to
-search all three at once, fzf style, and `/c` finds the commit that added any line of code.
+search commits and files fzf style, and add `/c` to search the code itself: levi finds the
+commit that added or removed any line you name.
 
 Named after humanity's strongest soldier: small, swift and precise. Captain Levi doesn't carry
 gear he won't use.
@@ -64,26 +65,37 @@ syntax works: `'exact`, `^prefix`, `suffix$`, `!not`.
 
 Two commands share the search bar:
 
-- `/c text` keeps the commits whose diffs add or remove `text`, and jumps to the first match.
+- `/c text` searches the code: the lines each commit added or removed. levi keeps the commits
+  where `text` appears as you typed it, spaces included, and jumps to the first match. Lowercase
+  matches any case; a capital makes it exact. Fuzzy terms before `/c` pick which commits and
+  files levi searches, which also makes it faster.
 - `/r` switches to the reflog, with commits from branches you deleted.
 
 ```
 /c git_parse_ssize_t    which commits touched this function?
-parse.rs /c let x =     in parse.rs only
+parse.rs /c let x =     the code `let x =`, in commits that touched parse.rs
 /r /c experiment        that code, from a branch you deleted
 ```
 
-## Reconnaissance
+## Reconnaissance: levi and coding agents
 
-`levi --filter` runs the same search without the TUI and prints one `<sha> <subject>` line per
-match, best first. Scripts and coding agents use it:
+> *Brats. They change forty files before lunch and can't tell you which commit broke the build.*
+
+Agents like Claude Code can't work a TUI, so levi reports to them in plain text.
+`levi --filter` runs the same search without the screen and prints one `<sha> <subject>` line
+per match, best first. Ask your agent which commit made the layout stack on narrow terminals,
+and it runs:
 
 ```sh
-levi --filter 'parse.rs /c fn parse'
-levi --filter 'login fix' main..HEAD
+$ levi --filter 'ui.rs /c STACK_BELOW'
+d3a93ab5f5c98621cbaf9079d0c952786239d221 Stack the lists above the diff on narrow terminals
 ```
 
-To brief Claude Code or another agent, add this to your `CLAUDE.md` or `AGENTS.md`:
+Then it reads that commit with `git show`. levi exits 1 when nothing matches, so the agent can
+tell an empty search from a broken one. Add a revision to search only its ground:
+`levi --filter 'login' main..HEAD`.
+
+Brief your agent once, in `CLAUDE.md` or `AGENTS.md`:
 
 ```markdown
 To find the commits that touched some code, run `levi --filter '<query>'`. The query is fuzzy
@@ -91,6 +103,10 @@ over commit subject, author, sha and file paths; `/c <text>` keeps only commits 
 or remove `<text>` (literal, smart case), and `/r` searches the reflog. It prints
 `<sha> <subject>`, best match first. Then read one with `git show <sha>`.
 ```
+
+Orders go the other way too. Found the culprit in levi? `C-y` copies its sha and a drag over
+the diff copies the code, ready to paste into the agent's chat with whatever you want done
+about it.
 
 ## Joint operations
 
