@@ -94,7 +94,7 @@ Details settled while building:
 | `↑/↓`, `C-p/C-n` | move in the focused column |
 | `Tab` / `S-Tab`, `←/→` | cycle focus a → b → c |
 | `PgUp/PgDn`, `C-u/C-d` | scroll the diff |
-| `S-↑/S-↓` | jump the diff to the previous/next `@@` hunk, putting it on top; with `/c` on, to the previous/next matching line instead, with 3 lines of context and sideways into view. Stops at the ends, works from any pane |
+| `S-↑/S-↓` | jump the diff to the previous/next `@@` hunk, putting it on top; with `/c` on, to the previous/next matching line instead, with 3 lines of context and sideways into view. Past a file's last stop it moves to the next file and lands on its first (backwards: the previous file's last), like vim's `]c`, waiting for that diff to load if needed. Stops at the commit's ends, works from any pane |
 | `S-←/S-→` | scroll the diff sideways, 8 columns (Alt-arrows would be word jumps in macOS terminals) |
 | `Enter` | print the selected sha to stdout and quit (`git checkout $(levi)`) |
 | `C-y` | copy the selected commit's full sha to the clipboard and stay ("yank"); the status line says `copied <short>` until the next key |

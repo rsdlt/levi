@@ -52,7 +52,7 @@ Keys:
   ↑/↓  C-p/C-n        move in the focused pane
   Tab/S-Tab  ←/→      switch pane
   PgUp/PgDn  C-u/C-d  scroll the diff
-  S-↑/S-↓             jump to the previous/next hunk, or /c match
+  S-↑/S-↓             jump to the previous/next hunk or /c match, across files
   S-←/S-→             scroll the diff sideways
   Enter               print the selected sha and quit:  git show $(levi)
   C-y                 copy the selected commit's sha

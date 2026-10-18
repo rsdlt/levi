@@ -138,6 +138,22 @@ pub enum Focus {
     Diff,
 }
 
+/// A place a hunk jump can land: the scroll that shows it, its line, and for a
+/// code match, the columns it spans.
+#[derive(Clone, Copy)]
+struct Stop {
+    scroll: usize,
+    line: usize,
+    hit: Option<(usize, usize)>,
+}
+
+/// Which end of a diff a hunk jump lands on when it crosses into it.
+#[derive(Clone, Copy)]
+enum Edge {
+    First,
+    Last,
+}
+
 /// A mouse drag in one pane: whole rows of a list, or text of the diff.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Selection {
@@ -236,6 +252,8 @@ pub struct App {
     /// Where the commits, files and diff panes are on screen, updated on every
     /// draw, so clicks can find their target.
     pub panes: [Rect; 3],
+    /// Where to land in a diff that a hunk jump crossed into, once it loads.
+    pending_jump: Option<Edge>,
     /// What the mouse is dragging over. It stays shown after the drag, until
     /// the next key or click.
     pub selection: Option<Selection>,
@@ -284,6 +302,7 @@ impl App {
             diff_height: 0,
             diff_width: 0,
             panes: [Rect::default(); 3],
+            pending_jump: None,
             selection: None,
             clipboard: None,
             notice: None,
@@ -543,31 +562,87 @@ impl App {
         };
     }
 
-    /// Scrolls the diff to the next (`forward`) or previous hunk, or code match
-    /// while `/c` is on. Past the last one it stays put.
-    fn jump_in_diff(&mut self, forward: bool) {
+    /// Where the diff can jump to: each hunk, or each code match while `/c` is
+    /// on, in order. Empty until the diff is loaded.
+    fn stops(&self) -> Vec<Stop> {
         let DiffView::Ready(lines) = self.diff() else {
-            return;
+            return Vec::new();
         };
         let pattern = self.code.as_ref().map(|c| c.pattern.as_str());
-        // Each stop with the scroll position that shows it.
-        let mut stops = lines.iter().enumerate().filter_map(|(i, l)| match pattern {
-            Some(pattern) => {
-                let hit = code_hit(l, pattern)?;
-                Some((i.saturating_sub(JUMP_CONTEXT), i, Some(hit)))
-            }
-            None => (l.kind == LineKind::Hunk).then_some((i, i, None)),
-        });
+        lines
+            .iter()
+            .enumerate()
+            .filter_map(|(i, l)| match pattern {
+                Some(pattern) => {
+                    let hit = code_hit(l, pattern)?;
+                    let scroll = i.saturating_sub(JUMP_CONTEXT);
+                    Some(Stop {
+                        scroll,
+                        line: i,
+                        hit: Some(hit),
+                    })
+                }
+                None => (l.kind == LineKind::Hunk).then_some(Stop {
+                    scroll: i,
+                    line: i,
+                    hit: None,
+                }),
+            })
+            .collect()
+    }
+
+    fn go_to(&mut self, stop: Stop) {
+        match stop.hit {
+            Some((before, through)) => self.show_code_hit(stop.line, before, through),
+            None => self.diff_scroll = stop.scroll,
+        }
+    }
+
+    /// Scrolls the diff to the next (`forward`) or previous hunk, or code match
+    /// while `/c` is on. Past a file's last one it goes on to the next file's
+    /// first, and back from the first to the previous file's last, like `]c`
+    /// in vim; at the commit's first and last it stays put.
+    fn jump_in_diff(&mut self, forward: bool) {
+        let stops = self.stops();
         let current = self.diff_scroll;
         let stop = if forward {
-            stops.find(|&(scroll, ..)| scroll > current)
+            stops.into_iter().find(|s| s.scroll > current)
         } else {
-            stops.rfind(|&(scroll, ..)| scroll < current)
+            stops.into_iter().rfind(|s| s.scroll < current)
         };
-        match stop {
-            Some((_, i, Some((before, through)))) => self.show_code_hit(i, before, through),
-            Some((scroll, ..)) => self.diff_scroll = scroll,
-            None => {}
+        if let Some(stop) = stop {
+            return self.go_to(stop);
+        }
+        let (step, edge) = if forward {
+            (1, Edge::First)
+        } else {
+            (-1, Edge::Last)
+        };
+        let before = self.file_idx;
+        self.move_in(Focus::Files, step);
+        if self.file_idx != before {
+            // The other file's diff may still be loading.
+            self.pending_jump = Some(edge);
+            self.apply_pending_jump();
+        }
+    }
+
+    /// Finishes a jump into another file once its diff is in.
+    fn apply_pending_jump(&mut self) {
+        let Some(edge) = self.pending_jump else {
+            return;
+        };
+        if matches!(self.diff(), DiffView::Loading) {
+            return;
+        }
+        self.pending_jump = None;
+        let stops = self.stops();
+        let stop = match edge {
+            Edge::First => stops.first(),
+            Edge::Last => stops.last(),
+        };
+        if let Some(&stop) = stop {
+            self.go_to(stop);
         }
     }
 
@@ -615,6 +690,7 @@ impl App {
     pub fn take_diff_request(&mut self) -> Option<DiffRequest> {
         self.settle();
         self.jump_to_code();
+        self.apply_pending_jump();
         let commit = self.commit()?;
         let req = DiffRequest {
             sha: commit.sha.clone(),
@@ -947,6 +1023,7 @@ impl App {
         self.diff_scroll = 0;
         self.diff_column = 0;
         self.selection = None;
+        self.pending_jump = None;
     }
 }
 

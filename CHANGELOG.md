@@ -13,6 +13,11 @@ the search commands, the sha printed on stdout and the exit codes.
   prints `<sha> <subject>` per match, best first. For scripts and coding agents: the full query
   syntax, `/c` and `/r` included. It exits 1 when nothing matches.
 
+### Changed
+
+- `Shift-↑/↓` hunk jumps carry on across files: past a file's last hunk, the next file opens at
+  its first, and back the same way, so a whole commit reads with one key.
+
 ## [0.13.0] - 2026-10-17
 
 ### Added

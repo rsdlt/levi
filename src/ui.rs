@@ -1120,6 +1120,59 @@ mod tests {
     }
 
     #[test]
+    fn hunk_jumps_cross_into_the_next_file() {
+        let repo = Repo::new();
+        let lines: Vec<String> = (1..=40).map(|n| format!("line {n}")).collect();
+        repo.write("a.rs", &(lines.join("\n") + "\n"));
+        repo.write("b.rs", &(lines.join("\n") + "\n"));
+        repo.commit("plain");
+        let mut a = lines.clone();
+        a[2] = "first".into();
+        a[30] = "second".into();
+        repo.write("a.rs", &(a.join("\n") + "\n"));
+        let mut b = lines.clone();
+        b[20] = "third".into();
+        repo.write("b.rs", &(b.join("\n") + "\n"));
+        repo.commit("two files");
+        let mut app = loaded(&repo);
+        serve_diffs(&mut app, &repo);
+        let hunks = |app: &App| -> Vec<usize> {
+            let DiffView::Ready(diff) = app.diff() else {
+                panic!("no diff");
+            };
+            (0..diff.len())
+                .filter(|&i| diff[i].kind == LineKind::Hunk)
+                .collect()
+        };
+        let shift = |app: &mut App, code| {
+            let key = KeyEvent::new(code, KeyModifiers::SHIFT);
+            app.update(Msg::Input(Event::Key(key)));
+            serve_diffs(app, &repo);
+        };
+        let a_hunks = hunks(&app);
+        assert_eq!(a_hunks.len(), 2);
+        shift(&mut app, KeyCode::Down);
+        shift(&mut app, KeyCode::Down);
+        assert_eq!((app.file_idx, app.diff_scroll), (0, a_hunks[1]));
+
+        // Past a.rs's last hunk: on to b.rs's first, once its diff is in.
+        shift(&mut app, KeyCode::Down);
+        assert_eq!(app.file().unwrap().path, "b.rs");
+        let b_hunks = hunks(&app);
+        assert_eq!(app.diff_scroll, b_hunks[0]);
+        assert_eq!(app.focus, Focus::Commits, "focus stays put");
+        // The commit's last hunk is as far as it goes.
+        shift(&mut app, KeyCode::Down);
+        assert_eq!((app.file_idx, app.diff_scroll), (1, b_hunks[0]));
+
+        // And back: into a.rs at its last hunk, then its first.
+        shift(&mut app, KeyCode::Up);
+        assert_eq!((app.file_idx, app.diff_scroll), (0, a_hunks[1]));
+        shift(&mut app, KeyCode::Up);
+        assert_eq!(app.diff_scroll, a_hunks[0]);
+    }
+
+    #[test]
     fn code_search_scrolls_to_a_match_past_the_edge() {
         let repo = Repo::new();
         let long = format!("let start = 1; {}// the TAIL end", "x".repeat(120));
