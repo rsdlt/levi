@@ -60,6 +60,7 @@ Keys:
   C-c                 quit
   click               select a commit or file
   wheel               move a list, or scroll the diff
+  drag                copy text from the diff, or whole rows from a list
 
 Exits 130 when quit without picking a commit, like fzf. Set NO_COLOR for no colors.
 ";

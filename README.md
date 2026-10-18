@@ -74,9 +74,11 @@ commits, so `/c` is faster too. `/r` still shows the whole reflog.
 | `C-c` | quit |
 | click | select a commit or file, or focus the diff |
 | wheel | move the list under the pointer, or scroll the diff (sideways too: trackpad or `Shift`+wheel) |
+| drag | copy: in the diff, the text you drag over; in the lists, whole rows as full paths or `sha subject` lines |
 
-levi takes the mouse, so to select text with it, hold a modifier while you drag: `Option` in
-iTerm2, `Fn` in Terminal.app, `Shift` in most other terminals.
+Copying goes through your terminal (OSC 52, so it works over SSH) and through `pbcopy`,
+`wl-copy` or `xclip`. For your terminal's own selection instead, hold a modifier while you drag:
+`Option` in iTerm2, `Fn` in Terminal.app, `Shift` in most others.
 
 `Enter` prints the sha to stdout, so levi works as a picker. Choose the commit; you won't regret
 it.

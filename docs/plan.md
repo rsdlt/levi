@@ -103,12 +103,16 @@ Details settled while building:
 | `C-c` | quit |
 | click | select a commit/file and focus its pane; focus the diff |
 | wheel | over a list, move its selection; over the diff, scroll 3 lines (sideways: horizontal wheel or Shift+wheel, 8 columns). Focus stays put |
+| drag | select and copy on release: the diff copies exactly the text dragged over (char-precise, `+`/`-` column included if covered); the lists copy whole rows as full values, since their rows are shortened: paths, and commits as `short subject` (`git log --oneline`). Past the diff's top or bottom edge the diff scrolls along |
 
-Mouse capture is on for the whole session and off on every exit (panics too). Motion and drag
-events are dropped in the input thread, since capture reports every movement and each would
-cost a redraw. The renderer records the three pane rects in `App::panes` for hit-testing.
-Native text selection needs a modifier (Option / Fn / Shift, per terminal); the sha, the thing
-usually copied, comes out on stdout anyway.
+Mouse capture is on for the whole session and off on every exit (panics too). Motion and
+right/middle drags are dropped in the input thread, since capture reports every movement and
+each would cost a redraw. The renderer records the three pane rects in `App::panes` for
+hit-testing. A selection lives in content coordinates (`Spot`: list item, or diff line and
+display column), so scrolling while it's shown keeps it on the same text. It needs the pointer
+to move: a click selects nothing. It stays shown after release, with `copied N lines` in the
+status, until the next key or click, and a newly selected commit or file clears it. Native
+text selection still works with a modifier (Option / Fn / Shift, per terminal).
 
 ## Clipboard
 

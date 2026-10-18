@@ -12,6 +12,9 @@ the search commands, the sha printed on stdout and the exit codes.
 - `Ctrl-Y` copies the selected commit's full sha to the clipboard and keeps levi open. It goes
   through the terminal (OSC 52, which works over SSH) and through `pbcopy` or
   `wl-copy`/`xclip`/`xsel`.
+- Drag with the mouse to copy. In the diff, exactly the text you drag over; past the top or
+  bottom edge it scrolls along. In the lists, whole rows as full values: complete paths, and
+  commits as `sha subject` lines like `git log --oneline`.
 
 ### Changed
 

@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::mem;
+use std::ops::RangeInclusive;
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{
@@ -137,6 +138,43 @@ pub enum Focus {
     Diff,
 }
 
+/// A mouse drag in one pane: whole rows of a list, or text of the diff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Selection {
+    pub pane: Focus,
+    /// Where the drag started.
+    pub anchor: Spot,
+    /// Where it is now.
+    pub head: Spot,
+}
+
+/// A place in a pane's content, not on screen, so scrolling doesn't move it:
+/// a list item and the screen column (which only tells a drag from a click),
+/// or a diff line and display column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Spot {
+    pub row: usize,
+    pub col: usize,
+}
+
+impl Selection {
+    /// Its two ends in reading order.
+    pub fn span(&self) -> (Spot, Spot) {
+        (self.anchor.min(self.head), self.anchor.max(self.head))
+    }
+
+    /// A click selects nothing; only moving away from where it started does.
+    pub fn dragged(&self) -> bool {
+        self.anchor != self.head
+    }
+
+    /// The selected rows, once the mouse has moved.
+    pub fn rows(&self, pane: Focus) -> Option<RangeInclusive<usize>> {
+        let (start, end) = self.span();
+        (self.pane == pane && self.dragged()).then_some(start.row..=end.row)
+    }
+}
+
 impl Focus {
     fn next(self) -> Focus {
         match self {
@@ -198,6 +236,9 @@ pub struct App {
     /// Where the commits, files and diff panes are on screen, updated on every
     /// draw, so clicks can find their target.
     pub panes: [Rect; 3],
+    /// What the mouse is dragging over. It stays shown after the drag, until
+    /// the next key or click.
+    pub selection: Option<Selection>,
     /// Text waiting to go to the clipboard (see `take_clipboard`).
     clipboard: Option<String>,
     /// A one-off message for the status line, like what was just copied.
@@ -243,6 +284,7 @@ impl App {
             diff_height: 0,
             diff_width: 0,
             panes: [Rect::default(); 3],
+            selection: None,
             clipboard: None,
             notice: None,
             exit: None,
@@ -271,6 +313,7 @@ impl App {
                     self.settle();
                 }
                 self.notice = None;
+                self.selection = None;
                 self.handle_key(key);
             }
             Msg::Input(Event::Mouse(mouse)) => {
@@ -676,6 +719,12 @@ impl App {
     /// Clicks select a row and focus its pane; the wheel acts on the pane
     /// under the pointer without moving focus.
     fn handle_mouse(&mut self, mouse: MouseEvent) {
+        // A drag carries on wherever the pointer goes, even off its pane.
+        match mouse.kind {
+            MouseEventKind::Drag(MouseButton::Left) => return self.drag(mouse),
+            MouseEventKind::Up(MouseButton::Left) => return self.release(),
+            _ => {}
+        }
         let at = Position::new(mouse.column, mouse.row);
         let Some(i) = self.panes.iter().position(|p| p.contains(at)) else {
             return;
@@ -695,23 +744,157 @@ impl App {
             MouseEventKind::ScrollUp => self.move_in(pane, -1),
             MouseEventKind::Down(MouseButton::Left) => {
                 self.focus = pane;
+                self.notice = None;
+                self.selection = None;
+                // Clicks count only between the pane's borders.
+                let Some(inner) = inside(self.panes[i]).filter(|r| r.contains(at)) else {
+                    return;
+                };
+                let row = (mouse.row - inner.y) as usize;
                 let (current, offset, len) = match pane {
                     Focus::Commits => (self.commit_idx, self.commit_offset, self.view.len()),
                     Focus::Files => (self.file_idx, self.file_offset, self.files().len()),
-                    Focus::Diff => return,
+                    Focus::Diff => {
+                        let col = self.diff_column + (mouse.column - inner.x) as usize;
+                        let spot = Spot {
+                            row: self.diff_scroll + row,
+                            col,
+                        };
+                        self.selection = Some(Selection {
+                            pane,
+                            anchor: spot,
+                            head: spot,
+                        });
+                        return;
+                    }
                 };
-                // Rows sit between the pane's top and bottom borders.
-                let row = mouse.row - self.panes[i].y;
-                if !(1..self.panes[i].height.saturating_sub(1)).contains(&row) {
-                    return;
-                }
-                let target = offset + row as usize - 1;
+                let target = offset + row;
                 if target < len {
                     self.move_in(pane, target as isize - current as isize);
+                    let spot = Spot {
+                        row: target,
+                        col: mouse.column as usize,
+                    };
+                    self.selection = Some(Selection {
+                        pane,
+                        anchor: spot,
+                        head: spot,
+                    });
                 }
             }
             _ => {}
         }
+    }
+
+    /// Moves the end of the selection to the pointer, kept inside the pane.
+    /// Past the diff's top or bottom edge, the diff scrolls along.
+    fn drag(&mut self, mouse: MouseEvent) {
+        let Some(mut sel) = self.selection else {
+            return;
+        };
+        // `panes` is in `Focus` order.
+        let i = sel.pane as usize;
+        let Some(inner) = inside(self.panes[i]) else {
+            return;
+        };
+        let (top, bottom) = (inner.y, inner.bottom() - 1);
+        let row = (mouse.row.clamp(top, bottom) - top) as usize;
+        let col = (mouse.column.clamp(inner.x, inner.right() - 1) - inner.x) as usize;
+        sel.head = match sel.pane {
+            Focus::Diff => {
+                if mouse.row < top {
+                    self.scroll_diff(-1);
+                } else if mouse.row > bottom {
+                    self.scroll_diff(1);
+                }
+                Spot {
+                    row: self.diff_scroll + row,
+                    col: self.diff_column + col,
+                }
+            }
+            list => {
+                let (offset, len) = match list {
+                    Focus::Commits => (self.commit_offset, self.view.len()),
+                    _ => (self.file_offset, self.files().len()),
+                };
+                if len == 0 {
+                    return;
+                }
+                Spot {
+                    row: (offset + row).min(len - 1),
+                    col: mouse.column as usize,
+                }
+            }
+        };
+        self.selection = Some(sel);
+    }
+
+    /// The end of a drag copies what it covered; a click selects nothing.
+    fn release(&mut self) {
+        let Some(sel) = self.selection else {
+            return;
+        };
+        if !sel.dragged() {
+            self.selection = None;
+            return;
+        }
+        if let Some((text, notice)) = self.selected_text(&sel) {
+            self.copy(text, notice);
+        }
+    }
+
+    /// What a selection copies, and how to say so. Lists copy whole values,
+    /// not their shortened rows: full paths, and commits as `git log
+    /// --oneline` would print them. The diff copies exactly what's selected.
+    fn selected_text(&self, sel: &Selection) -> Option<(String, String)> {
+        let (start, end) = sel.span();
+        let rows = start.row..=end.row;
+        let lines: Vec<String> = match sel.pane {
+            Focus::Commits => self
+                .view
+                .get(rows)?
+                .iter()
+                .map(|hit| {
+                    let c = &self.commits[hit.commit];
+                    let text = c.reflog.as_ref().map_or(&c.subject, |r| &r.action);
+                    format!("{} {text}", c.short)
+                })
+                .collect(),
+            Focus::Files => self
+                .files()
+                .get(rows)?
+                .iter()
+                .map(|f| f.path.clone())
+                .collect(),
+            Focus::Diff => {
+                let DiffView::Ready(diff) = self.diff() else {
+                    return None;
+                };
+                let last = end.row.min(diff.len().checked_sub(1)?);
+                (start.row..=last)
+                    .map(|l| {
+                        let from = if l == start.row { start.col } else { 0 };
+                        let to = if l == end.row {
+                            end.col + 1
+                        } else {
+                            usize::MAX
+                        };
+                        slice_columns(&diff[l].text, from, to).to_owned()
+                    })
+                    .collect()
+            }
+        };
+        if lines.is_empty() || lines.iter().all(String::is_empty) {
+            return None;
+        }
+        let noun = match sel.pane {
+            Focus::Commits => "commit",
+            Focus::Files => "path",
+            Focus::Diff => "line",
+        };
+        let plural = if lines.len() == 1 { "" } else { "s" };
+        let notice = format!("copied {} {noun}{plural}", lines.len());
+        Some((lines.join("\n"), notice))
     }
 
     fn move_selection(&mut self, delta: isize) {
@@ -759,10 +942,40 @@ impl App {
         self.diff_column = step(self.diff_column, delta, last + 1);
     }
 
+    /// For a newly selected commit or file, whose diff starts over.
     fn reset_diff_scroll(&mut self) {
         self.diff_scroll = 0;
         self.diff_column = 0;
+        self.selection = None;
     }
+}
+
+/// A pane's area between its borders, if there's any.
+fn inside(pane: Rect) -> Option<Rect> {
+    (pane.width > 2 && pane.height > 2).then(|| Rect {
+        x: pane.x + 1,
+        y: pane.y + 1,
+        width: pane.width - 2,
+        height: pane.height - 2,
+    })
+}
+
+/// The part of `text` whose chars start at display columns `from..to`.
+pub fn slice_columns(text: &str, from: usize, to: usize) -> &str {
+    let (mut start, mut end) = (None, text.len());
+    let mut col = 0;
+    for (i, c) in text.char_indices() {
+        if col >= to {
+            end = i;
+            break;
+        }
+        if start.is_none() && col >= from {
+            start = Some(i);
+        }
+        col += columns(&text[i..i + c.len_utf8()]);
+    }
+    let start = start.unwrap_or(end);
+    &text[start.min(end)..end]
 }
 
 /// Terminal columns `text` takes up.

@@ -1,7 +1,7 @@
 //! Rendering: search bar on top, commits | files | diff below, or on narrow
 //! terminals commits | files above the diff.
 
-use std::ops::Range;
+use std::ops::{Range, RangeInclusive};
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -203,6 +203,15 @@ fn follow(offset: &mut usize, selected: usize, height: usize) {
 
 /// Renders rows `offset..` of a list whose items were built for that window only,
 /// so cost doesn't grow with the length of the log.
+/// Shows list row `i` in reverse video if it's among the dragged-over `rows`.
+fn mark<'a>(item: ListItem<'a>, rows: &Option<RangeInclusive<usize>>, i: usize) -> ListItem<'a> {
+    if rows.as_ref().is_some_and(|r| r.contains(&i)) {
+        item.style(Style::new().add_modifier(Modifier::REVERSED))
+    } else {
+        item
+    }
+}
+
 fn draw_window(
     frame: &mut Frame,
     area: Rect,
@@ -227,6 +236,7 @@ fn draw_commits(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = pane(title, focused);
     let height = block.inner(area).height as usize;
     follow(&mut app.commit_offset, app.commit_idx, height);
+    let marked = app.selection.and_then(|s| s.rows(Focus::Commits));
 
     let App {
         view,
@@ -236,9 +246,10 @@ fn draw_commits(frame: &mut Frame, app: &mut App, area: Rect) {
     } = app;
     let mut items: Vec<ListItem> = view
         .iter()
+        .enumerate()
         .skip(app.commit_offset)
         .take(height)
-        .map(|hit| {
+        .map(|(i, hit)| {
             let c = &commits[hit.commit];
             let sha_style = if hit.score == u32::MAX {
                 matched(Style::new().fg(Color::Yellow))
@@ -253,7 +264,7 @@ fn draw_commits(frame: &mut Frame, app: &mut App, area: Rect) {
                 &filter.highlights(text, false),
                 Style::new(),
             ));
-            ListItem::new(Line::from(spans))
+            mark(ListItem::new(Line::from(spans)), &marked, i)
         })
         .collect();
     if items.is_empty() && !app.query.trim().is_empty() {
@@ -277,6 +288,7 @@ fn draw_files(frame: &mut Frame, app: &mut App, area: Rect) {
     follow(&mut app.file_offset, app.file_idx, height);
     // After the status letter and its space.
     let width = (inner.width as usize).saturating_sub(2);
+    let marked = app.selection.and_then(|s| s.rows(Focus::Files));
 
     let App {
         view,
@@ -295,9 +307,10 @@ fn draw_files(frame: &mut Frame, app: &mut App, area: Rect) {
         .unwrap_or_else(|| (0..files.len()).collect());
     let items: Vec<ListItem> = shown
         .iter()
+        .enumerate()
         .skip(app.file_offset)
         .take(height)
-        .map(|&i| {
+        .map(|(row, &i)| {
             let f = &files[i];
             let mut spans = vec![
                 Span::styled(f.status.letter().to_string(), status_style(f.status)),
@@ -309,7 +322,7 @@ fn draw_files(frame: &mut Frame, app: &mut App, area: Rect) {
                 None => vec![Part::new(new.0, new.1, Style::new())],
             };
             spans.extend(fitted(parts, width));
-            ListItem::new(Line::from(spans))
+            mark(ListItem::new(Line::from(spans)), &marked, row)
         })
         .collect();
     let row = app.file_idx - app.file_offset;
@@ -532,6 +545,33 @@ fn draw_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     let column = app.diff_column.min(u16::MAX as usize) as u16;
     frame.render_widget(Paragraph::new(lines).block(block).scroll((0, column)), area);
+    mark_text(frame.buffer_mut(), app, inner);
+}
+
+/// Shows the text dragged over in the diff in reverse video.
+fn mark_text(buf: &mut Buffer, app: &App, inner: Rect) {
+    let (Some(sel), DiffView::Ready(lines)) = (app.selection, app.diff()) else {
+        return;
+    };
+    let Some(rows) = sel.rows(Focus::Diff) else {
+        return;
+    };
+    let (start, end) = sel.span();
+    for (y, l) in (inner.y..inner.bottom()).zip(app.diff_scroll..) {
+        if !rows.contains(&l) || l >= lines.len() {
+            continue;
+        }
+        // Display columns of the line that are selected, up to its end.
+        let width = columns(&lines[l].text);
+        let from = if l == start.row { start.col } else { 0 };
+        let to = if l == end.row { end.col + 1 } else { width }.min(width);
+        for col in from.max(app.diff_column)..to {
+            let x = inner.x as usize + col - app.diff_column;
+            if x < inner.right() as usize {
+                buf[(x as u16, y)].modifier.insert(Modifier::REVERSED);
+            }
+        }
+    }
 }
 
 /// A diff line with its changed words in reverse video, like `diff-highlight`,
@@ -795,6 +835,125 @@ mod tests {
         assert_eq!(app.focus, Focus::Diff);
         mouse(&mut app, click, 2, 1);
         assert_eq!(app.focus, Focus::Diff);
+    }
+
+    const LEFT: MouseEventKind = MouseEventKind::Down(MouseButton::Left);
+    const DRAG: MouseEventKind = MouseEventKind::Drag(MouseButton::Left);
+    const UP: MouseEventKind = MouseEventKind::Up(MouseButton::Left);
+
+    #[test]
+    fn dragging_over_lists_copies_whole_values() {
+        let repo = titans();
+        let mut app = loaded(&repo);
+        serve_diffs(&mut app, &repo);
+        render(&mut app);
+        let commits = app.panes[0];
+        let (x, top) = (commits.x + 3, commits.y + 1);
+        mouse(&mut app, LEFT, x, top);
+        mouse(&mut app, DRAG, x + 2, top + 1);
+        // Past the last commit, the selection stops at it.
+        mouse(&mut app, DRAG, x, top + 10);
+        let marked = |app: &mut App, pane: Rect, row: u16| {
+            let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+            terminal.draw(|f| draw(f, app)).unwrap();
+            terminal.backend().buffer()[(pane.x + 2, pane.y + 1 + row)]
+                .modifier
+                .contains(Modifier::REVERSED)
+        };
+        assert!(marked(&mut app, commits, 2), "shown while dragging");
+        mouse(&mut app, UP, x, top + 10);
+        let oneline: Vec<String> = repo
+            .log()
+            .iter()
+            .map(|c| format!("{} {}", c.short, c.subject))
+            .collect();
+        assert_eq!(app.take_clipboard(), Some(oneline.join("\n")));
+        assert_eq!(app.notice.as_deref(), Some("copied 3 commits"));
+        assert!(
+            marked(&mut app, commits, 2),
+            "and after, until the next key"
+        );
+        assert_eq!(app.commit_idx, 0, "dragging doesn't move the selection");
+
+        // Files copy their full paths, however they're shortened on screen.
+        press(&mut app, KeyCode::Down);
+        assert!(!marked(&mut app, commits, 2), "a key clears it");
+        let files = app.panes[1];
+        mouse(&mut app, LEFT, files.x + 3, files.y + 1);
+        mouse(&mut app, DRAG, files.x + 3, files.y + 2);
+        mouse(&mut app, UP, files.x + 3, files.y + 2);
+        assert_eq!(
+            app.take_clipboard().as_deref(),
+            Some("src/parse.rs\nsrc/ui.rs")
+        );
+        assert_eq!(app.notice.as_deref(), Some("copied 2 paths"));
+
+        // A click, without moving, selects a row but copies nothing.
+        mouse(&mut app, LEFT, x, top + 2);
+        mouse(&mut app, UP, x, top + 2);
+        assert_eq!(app.take_clipboard(), None);
+        assert_eq!((app.selection, app.commit_idx), (None, 2));
+    }
+
+    #[test]
+    fn dragging_over_the_diff_copies_the_text() {
+        let repo = Repo::new();
+        let lines: Vec<String> = (1..=60).map(|n| format!("line {n}")).collect();
+        repo.write(
+            "a.rs",
+            &format!("alpha beta\ngamma delta\n{}\n", lines.join("\n")),
+        );
+        repo.commit("greek");
+        let mut app = loaded(&repo);
+        serve_diffs(&mut app, &repo);
+        render(&mut app);
+        let diff = app.panes[2];
+        let DiffView::Ready(text) = app.diff() else {
+            panic!("no diff");
+        };
+        let alpha = text.iter().position(|l| l.text == "+alpha beta").unwrap() as u16;
+        let (x, y) = (diff.x + 1, diff.y + 1 + alpha);
+        // From the "a" of alpha (column 1, after the +) to the end of "+gamma".
+        mouse(&mut app, LEFT, x + 1, y);
+        mouse(&mut app, DRAG, x + 5, y + 1);
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let reversed =
+            |dx: u16, dy: u16| buf[(x + dx, y + dy)].modifier.contains(Modifier::REVERSED);
+        assert!(!reversed(0, 0) && reversed(1, 0) && reversed(10, 0));
+        assert!(reversed(0, 1) && reversed(5, 1) && !reversed(6, 1));
+        mouse(&mut app, UP, x + 5, y + 1);
+        assert_eq!(app.take_clipboard().as_deref(), Some("alpha beta\n+gamma"));
+        assert_eq!(app.notice.as_deref(), Some("copied 2 lines"));
+
+        // Dragging past the bottom edge scrolls the diff along.
+        let bottom = diff.bottom() - 2;
+        mouse(&mut app, LEFT, x, y);
+        for _ in 0..5 {
+            mouse(&mut app, DRAG, x + 3, bottom + 3);
+        }
+        assert_eq!(app.diff_scroll, 5);
+        let head = app.selection.unwrap().head;
+        assert_eq!(head.row, 5 + (bottom - diff.y - 1) as usize);
+        mouse(&mut app, UP, x + 3, bottom + 3);
+        let copied = app.take_clipboard().unwrap();
+        assert!(copied.starts_with("+alpha beta\n+gamma delta\n+line 1\n"));
+        assert!(copied.ends_with("\n+line 8\n+lin"), "the column under the pointer counts");
+    }
+
+    #[test]
+    fn slices_by_display_columns() {
+        use crate::app::slice_columns;
+        assert_eq!(slice_columns("+let x = 1;", 1, 4), "let");
+        assert_eq!(slice_columns("a日b", 1, 3), "日");
+        assert_eq!(
+            slice_columns("a日b", 2, 4),
+            "b",
+            "a wide char starting before is left out"
+        );
+        assert_eq!(slice_columns("abc", 1, usize::MAX), "bc");
+        assert_eq!(slice_columns("abc", 5, 9), "");
     }
 
     #[test]

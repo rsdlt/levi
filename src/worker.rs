@@ -11,7 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use ratatui::crossterm::event::{self, Event, MouseEventKind};
+use ratatui::crossterm::event::{self, Event, MouseButton, MouseEventKind};
 
 use crate::app::{CodeRequest, CodeTarget, DiffRequest, LogRequest, Msg};
 use crate::git::{self, Commit};
@@ -25,10 +25,15 @@ const BATCH_INTERVAL: Duration = Duration::from_millis(16);
 pub fn spawn_input(tx: Sender<Msg>) {
     thread::spawn(move || {
         while let Ok(ev) = event::read() {
-            // Mouse capture reports every movement; only clicks and the wheel matter,
-            // and the rest would each cost a redraw.
+            // Mouse capture reports every movement; only clicks, the wheel and
+            // left-button drags (to select) matter, and the rest would each
+            // cost a redraw.
             if let Event::Mouse(m) = &ev
-                && matches!(m.kind, MouseEventKind::Moved | MouseEventKind::Drag(_))
+                && matches!(
+                    m.kind,
+                    MouseEventKind::Moved
+                        | MouseEventKind::Drag(MouseButton::Right | MouseButton::Middle)
+                )
             {
                 continue;
             }
