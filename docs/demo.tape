@@ -21,6 +21,8 @@ Set CursorBlink false
 # address ends up in the GIF.
 Hide
 Type `export PS1='$ ' PATH="$PWD/target/release:$PATH" GIT_PAGER=cat FILTER_BRANCH_SQUELCH_WARNING=1` Enter
+# Ctrl-O's editor: a plain Neovim with line numbers, nobody's own config.
+Type `export VISUAL= EDITOR="nvim --clean -c 'set number'" && unset NVIM` Enter
 Type `cd "$(mktemp -d)" && git clone -q "$OLDPWD" levi && cd levi` Enter
 Type `git filter-branch -f --env-filter 'export GIT_AUTHOR_EMAIL=levi@survey.corps GIT_COMMITTER_EMAIL=levi@survey.corps' HEAD >/dev/null 2>&1` Enter
 Sleep 8s
@@ -55,8 +57,27 @@ Sleep 500ms
 # Typed in two halves so this file isn't a match itself.
 Type "/c fn tok"
 Type "ens"
-Sleep 3.5s
+Sleep 3s
+
+# Ctrl-O opens the file in your editor at the line you're reading; quit it to come back.
+Ctrl+O
+Sleep 2.5s
+Type ":q"
+Sleep 300ms
+Enter
+Sleep 1.2s
 
 # Pick it: levi exits and git show takes the sha.
 Enter
-Sleep 4s
+Sleep 3s
+
+# --filter runs the same search without the TUI, for scripts and coding agents.
+Hide
+Type "clear"
+Enter
+Show
+Type "levi --filter '/c fn tok"
+Type "ens'"
+Sleep 500ms
+Enter
+Sleep 3s
