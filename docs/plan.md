@@ -256,3 +256,17 @@ next commit (killing its git), and late messages from old generations are droppe
 - `--all` branches.
 - Working-tree pseudo-commit at the top of column a.
 - Optional `delta` piping / syntax highlighting.
+- Sending what's on screen to a coding agent. Three shapes, in order of preference:
+  - **`levi --focus` (agents pull).** A running levi keeps a small note of what it shows: commit,
+    file, the lines in view and any drag selection, rewritten only when they change (e.g. under
+    `.git/`) and removed on exit. `levi --focus` prints it, so "look at what I have open in levi"
+    works with any agent that runs commands, in the session you already have. Same model as
+    `--filter`; the CLAUDE.md snippet grows by a line. With two levis on one repo, the last one
+    touched wins.
+  - **Copy a reference.** One key copies `<sha> <path>:<lines> ("<subject>")` instead of raw text,
+    for agents that can't run commands; they `git show` the rest. Small, but still a paste.
+  - **Launch the agent** like `C-o` launches the editor, with a prompt naming the commit, file and
+    lines. Starts a new session each time (losing the running one), needs a question typed into
+    levi and agent-specific command lines: the least levi-like. Pushing a message into an
+    already-running agent isn't possible: Claude Code has no public way for another program to
+    do it.
