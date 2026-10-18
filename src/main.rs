@@ -23,7 +23,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 
 use app::{App, Exit};
@@ -300,8 +300,9 @@ fn open(terminal: &mut Tui, input: &worker::Input, root: &Path, req: &app::OpenR
     input.pause();
     restore();
     let target = file.to_string_lossy();
-    let status = editor::command(&editor, root, &target, line).status();
-    let back = enter().and_then(|()| Ok(terminal.clear()?));
+    let mut cmd = editor::command(&editor, root, &target, line);
+    let status = editor::on_terminal(&mut cmd).and_then(|()| Ok(cmd.status()?));
+    let back = enter().and_then(|()| repaint(terminal));
     input.resume();
     if past.is_some() {
         editor::remove_copy(&file);
@@ -324,6 +325,15 @@ fn init() -> Result<Tui> {
     }));
     enter()?;
     Ok(Terminal::new(CrosstermBackend::new(io::stderr()))?)
+}
+
+/// Wipes what another program left on the screen, and has the next frame drawn
+/// whole. Not `Terminal::clear`: it asks for the cursor position on stdout,
+/// which in `$(levi)` would land in front of the picked sha.
+fn repaint(terminal: &mut Tui) -> Result<()> {
+    execute!(io::stderr(), Clear(ClearType::All))?;
+    *terminal = Terminal::new(CrosstermBackend::new(io::stderr()))?;
+    Ok(())
 }
 
 /// Takes the terminal over: raw mode, the alternate screen and the mouse.

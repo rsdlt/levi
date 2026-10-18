@@ -1,6 +1,7 @@
 //! Opening a file at a line: in the Neovim levi runs inside, when it does, or
 //! else in `$VISUAL`/`$EDITOR`, which takes over the terminal until it quits.
 
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -116,6 +117,27 @@ pub fn command(editor: &str, dir: &Path, file: &str, line: usize) -> Command {
     };
     cmd.args(args(editor, file, line)).current_dir(dir);
     cmd
+}
+
+/// Points the editor at the terminal. levi's own stdout is often a pipe, as in
+/// `git show $(levi)`, where the editor would draw into the sha's place; it
+/// draws where levi does, on stderr, and reads keys from the terminal too.
+pub fn on_terminal(cmd: &mut Command) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::IsTerminal;
+        use std::os::fd::AsFd;
+        cmd.stdout(io::stderr().as_fd().try_clone_to_owned()?);
+        if !io::stdin().is_terminal() {
+            cmd.stdin(std::fs::File::open("/dev/tty")?);
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsHandle;
+        cmd.stdout(io::stderr().as_handle().try_clone_to_owned()?);
+    }
+    Ok(())
 }
 
 /// How `editor` takes a line: `+12 file` for vi, Neovim, Emacs, nano, micro,

@@ -7,6 +7,12 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+### Fixed
+
+- `Ctrl-O` inside `$(levi)`, as in `git show $(levi)`: the editor drew into the pipe meant for the
+  sha instead of on the screen, and the redraw afterwards put a terminal query in front of the sha.
+  The editor now uses the terminal levi draws on, and the sha comes out clean.
+
 ## [0.14.0] - 2026-10-17
 
 ### Added
