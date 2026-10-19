@@ -21,6 +21,28 @@ the layout stacks: commits | files take the top 35% (55% / 45% of the width) and
 full width below. It follows the terminal's width on every frame; there's no toggle key, for the
 same reason as the hints below. Focus order and keys don't change.
 
+### Resizing
+
+The splits above are defaults; dragging a seam with the mouse moves it.
+
+- **Seams.** Every pane draws its own border, so where two panes meet there are two border
+  columns side by side (two rows, between the lists and the diff when stacked). A left press
+  on either starts a resize; the outer edges aren't seams. A click on a border used to only
+  focus its pane, so no row pick or selection is lost.
+- **Dragging** moves the seam with the pointer and changes only the two panes beside it: in
+  the wide layout, moving commits|files leaves the diff's width alone. Release ends it. A
+  resize doesn't move focus, the selection or any scroll.
+- **Floors.** No pane gets narrower than 12 columns or shorter than 5 rows; the seam stops
+  there.
+- **Proportions, not cells.** Splits are kept as fractions of the body, so a terminal resize
+  keeps them. The wide and the stacked layout each keep their own, so crossing 120 columns
+  and back doesn't lose either.
+- **Double-click a seam** to put its layout back to the defaults.
+- **Session only.** Quitting forgets the sizes: keeping them needs a config file, and levi
+  has no settings. No keys either: printable keys belong to the search, and a mouse-free
+  user has the defaults, which are what levi was laid out for.
+- Terminals that report clicks but not drags just don't resize.
+
 A path too long for the files column loses its start, never its end: whole leading directories
 go first, so it reads `…/components/frontend/Button.tsx`, and only a file name wider than the
 column itself gets cut (`…ton.tsx`). Wrapping was rejected: one row per file keeps clicks, scrolling
@@ -200,7 +222,8 @@ src/
   worker.rs  – input / log / diff threads, all reporting through one Msg channel
   filter.rs  – nucleo matching over commits + files, producing filtered views
   app.rs     – state: query, filtered views, selections, focus, scroll, diff LRU
-  ui.rs      – layout and rendering of the 4 widgets
+  layout.rs  – where the panes go, and the seams a drag moves
+  ui.rs      – rendering of the 4 widgets
   words.rs   – word-level marks for edited lines
   testutil.rs – throwaway git repos for tests
 tests/cli.rs – runs the binary: errors, flags, exit codes

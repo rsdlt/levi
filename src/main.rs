@@ -3,6 +3,7 @@ mod clipboard;
 mod editor;
 mod filter;
 mod git;
+mod layout;
 mod query;
 mod syntax;
 mod tint;
@@ -73,6 +74,8 @@ Keys:
   click               select a commit or file
   wheel               move a list, or scroll the diff
   drag                copy text from the diff, or whole rows from a list
+  drag a border       resize the panes beside it (double-click: back to the
+                      defaults)
 
 Exits 130 when quit without picking a commit, like fzf. Set NO_COLOR for no colors.
 

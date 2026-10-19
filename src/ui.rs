@@ -33,10 +33,6 @@ const HINTS: [(&str, &str); 11] = [
     ("S-←→", "sideways"),
 ];
 
-/// Below this many columns, three side-by-side panes leave the diff too
-/// narrow to read, so the lists go above it instead.
-const STACK_BELOW: u16 = 120;
-
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let [search, body, hints] = Layout::vertical([
         Constraint::Length(3),
@@ -44,21 +40,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Constraint::Length(1),
     ])
     .areas(frame.area());
-    let [commits, files, diff] = if body.width < STACK_BELOW {
-        let [lists, diff] =
-            Layout::vertical([Constraint::Percentage(35), Constraint::Percentage(65)]).areas(body);
-        let [commits, files] =
-            Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)])
-                .areas(lists);
-        [commits, files, diff]
-    } else {
-        Layout::horizontal([
-            Constraint::Percentage(25),
-            Constraint::Percentage(20),
-            Constraint::Percentage(55),
-        ])
-        .areas(body)
-    };
+    app.body = body;
+    let [commits, files, diff] = app.splits.areas(body);
     app.panes = [commits, files, diff];
 
     draw_search(frame, app, search);
@@ -930,6 +913,36 @@ mod tests {
     const LEFT: MouseEventKind = MouseEventKind::Down(MouseButton::Left);
     const DRAG: MouseEventKind = MouseEventKind::Drag(MouseButton::Left);
     const UP: MouseEventKind = MouseEventKind::Up(MouseButton::Left);
+
+    #[test]
+    fn dragging_a_border_resizes_the_panes() {
+        let repo = titans();
+        let mut app = loaded(&repo);
+        serve_diffs(&mut app, &repo);
+        render(&mut app);
+        let widths = |app: &App| app.panes.map(|p| p.width);
+        let before = widths(&app);
+        let (seam, row) = (app.panes[2].x, app.panes[2].y + 5);
+
+        // The diff's left border, dragged left: the files give up the room.
+        mouse(&mut app, LEFT, seam, row);
+        mouse(&mut app, DRAG, seam - 6, row);
+        mouse(&mut app, UP, seam - 6, row);
+        render(&mut app);
+        assert_eq!(widths(&app), [before[0], before[1] - 6, before[2] + 6]);
+        assert_eq!(app.selection, None, "a resize selects nothing");
+        assert_eq!(app.take_clipboard(), None);
+        assert_eq!(app.focus, Focus::Commits, "or moves focus");
+
+        // A double-click puts it back.
+        let seam = app.panes[2].x;
+        mouse(&mut app, LEFT, seam, row);
+        mouse(&mut app, UP, seam, row);
+        mouse(&mut app, LEFT, seam, row);
+        mouse(&mut app, UP, seam, row);
+        render(&mut app);
+        assert_eq!(widths(&app), before);
+    }
 
     #[test]
     fn dragging_over_lists_copies_whole_values() {

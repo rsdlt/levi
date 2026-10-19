@@ -7,6 +7,11 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+### Added
+
+- Drag the border between two panes to resize them. A double-click on it puts the layout back
+  to its defaults. Sizes are kept as proportions, for the session only.
+
 ## [0.17.0] - 2026-10-19
 
 ### Added

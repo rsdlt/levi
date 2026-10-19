@@ -13,6 +13,7 @@ use ratatui::text::Span;
 
 use crate::filter::{self, Filter, Hit};
 use crate::git::{Commit, DiffLine, FileChange, LineKind, Status};
+use crate::layout::{Resize, Seam, Splits};
 use crate::query::{self, Source, find_code};
 
 /// Diffs kept in memory; older ones are refetched on demand.
@@ -25,6 +26,8 @@ const JUMP_CONTEXT: usize = 3;
 const WHEEL_LINES: isize = 3;
 /// Columns one sideways scroll of the diff moves, by key or wheel.
 const SIDE_STEP: isize = 8;
+/// Two presses on a seam within this long put its layout back to the defaults.
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 /// (commit sha, file path), or an empty path for a commit without files.
 pub type DiffKey = (String, String);
@@ -287,6 +290,14 @@ pub struct App {
     /// Where the commits, files and diff panes are on screen, updated on every
     /// draw, so clicks can find their target.
     pub panes: [Rect; 3],
+    /// The area the panes share, updated on every draw.
+    pub body: Rect,
+    /// Where the seams between panes sit, moved by dragging them.
+    pub splits: Splits,
+    /// The seam being dragged.
+    resizing: Option<Resize>,
+    /// The last press on a seam, to tell a double-click.
+    seam_press: Option<(Seam, Instant)>,
     /// Where to land in a diff that a hunk jump crossed into, once it loads.
     pending_jump: Option<Edge>,
     /// What the mouse is dragging over. It stays shown after the drag, until
@@ -355,6 +366,10 @@ impl App {
             diff_height: 0,
             diff_width: 0,
             panes: [Rect::default(); 3],
+            body: Rect::default(),
+            splits: Splits::default(),
+            resizing: None,
+            seam_press: None,
             pending_jump: None,
             selection: None,
             clipboard: None,
@@ -1079,13 +1094,25 @@ impl App {
     /// Clicks select a row and focus its pane; the wheel acts on the pane
     /// under the pointer without moving focus.
     fn handle_mouse(&mut self, mouse: MouseEvent) {
+        let at = Position::new(mouse.column, mouse.row);
         // A drag carries on wherever the pointer goes, even off its pane.
-        match mouse.kind {
-            MouseEventKind::Drag(MouseButton::Left) => return self.drag(mouse),
-            MouseEventKind::Up(MouseButton::Left) => return self.release(),
+        match (mouse.kind, self.resizing) {
+            (MouseEventKind::Drag(MouseButton::Left), Some(resize)) => {
+                return self.splits.drag(self.body, self.panes, resize, at);
+            }
+            (MouseEventKind::Up(MouseButton::Left), Some(_)) => {
+                self.resizing = None;
+                return;
+            }
+            (MouseEventKind::Drag(MouseButton::Left), None) => return self.drag(mouse),
+            (MouseEventKind::Up(MouseButton::Left), None) => return self.release(),
+            (MouseEventKind::Down(MouseButton::Left), _) => {
+                if let Some(resize) = Splits::seam_at(self.body, self.panes, at) {
+                    return self.press_seam(resize);
+                }
+            }
             _ => {}
         }
-        let at = Position::new(mouse.column, mouse.row);
         let Some(i) = self.panes.iter().position(|p| p.contains(at)) else {
             return;
         };
@@ -1143,6 +1170,22 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Starts dragging a seam, or on a second press soon after the first,
+    /// puts the layout back to its defaults.
+    fn press_seam(&mut self, resize: Resize) {
+        let now = Instant::now();
+        let double = self
+            .seam_press
+            .is_some_and(|(seam, at)| seam == resize.seam && now - at < DOUBLE_CLICK);
+        if double {
+            self.splits.reset(self.body);
+            self.seam_press = None;
+        } else {
+            self.resizing = Some(resize);
+            self.seam_press = Some((resize.seam, now));
         }
     }
 

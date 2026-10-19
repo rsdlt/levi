@@ -87,7 +87,8 @@ do it, and levi catches up within two seconds, without losing your place.
 | `C-o` | open the file in your editor at the line you're reading |
 | `Esc` | clear the search, or quit |
 
-The mouse works too: click to select, scroll with the wheel, drag to copy. `levi --help` lists
+The mouse works too: click to select, scroll with the wheel, drag to copy, drag a border to
+resize the panes. `levi --help` lists
 every key. Set `NO_COLOR` for plain black and white.
 
 ## Hunting
