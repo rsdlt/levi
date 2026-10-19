@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1280 640" width="1280" height="640">
+  <!-- GitHub's social preview for the repository (Settings, Social preview).
+       Render it with: rsvg-convert docs/social-preview.svg -o docs/social-preview.png -->
+  <rect width="1280" height="640" fill="#14161e"/>
+  <image x="110" y="150" width="340" height="340" xlink:href="logo.svg"/>
+  <g font-family="JetBrains Mono, Menlo, monospace">
+    <text x="520" y="300" font-size="132" font-weight="700" fill="#c0caf5">levi</text>
+    <text x="524" y="356" font-size="30" fill="#9aa5ce">The fastest blade for your git history.</text>
+    <text x="524" y="402" font-size="30" fill="#9aa5ce">Fuzzy search for you,</text>
+    <text x="524" y="444" font-size="30" fill="#9aa5ce">plain text for your agents.</text>
+    <text x="1180" y="590" font-size="24" fill="#565f89" text-anchor="end">github.com/rsdlt/levi</text>
+  </g>
+</svg>
