@@ -7,6 +7,8 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-19
+
 ### Added
 
 - Drag the border between two panes to resize them. A double-click on it puts the layout back
@@ -231,7 +233,8 @@ First release.
 - `--help` and `--version`.
 - `cargo deny` configuration for license, advisory and source checks.
 
-[Unreleased]: https://github.com/rsdlt/levi/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/rsdlt/levi/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/rsdlt/levi/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/rsdlt/levi/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/rsdlt/levi/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/rsdlt/levi/compare/v0.14.1...v0.15.0
