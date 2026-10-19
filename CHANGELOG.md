@@ -7,6 +7,8 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-19
+
 ### Added
 
 - levi follows the repository while it's open. New commits, from a commit or a pull in another
@@ -224,7 +226,8 @@ First release.
 - `--help` and `--version`.
 - `cargo deny` configuration for license, advisory and source checks.
 
-[Unreleased]: https://github.com/rsdlt/levi/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/rsdlt/levi/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/rsdlt/levi/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/rsdlt/levi/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/rsdlt/levi/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/rsdlt/levi/compare/v0.14.0...v0.14.1
