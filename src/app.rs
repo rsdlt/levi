@@ -41,6 +41,20 @@ pub enum Msg {
     /// Chunks searched so far, out of how many.
     CodeProgress(u64, usize, usize),
     CodeDone(u64, Result<(), String>),
+    /// What `Source` shows changed under levi.
+    Moved(Source, Change),
+    /// The commits a refresh found on top, from the load with this generation.
+    Newer(u64, Result<Vec<Commit>, String>),
+}
+
+/// How what levi shows changed since the watcher last looked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Change {
+    /// New commits on top, as after a commit or a pull: these revisions cover
+    /// just them.
+    Grew(Vec<String>),
+    /// Anything else, like an amend, a rebase or a new reflog entry.
+    Rewritten,
 }
 
 /// Search the diffs of `targets` for `pattern`. A higher generation supersedes the rest.
@@ -73,6 +87,9 @@ pub struct CodeSearch {
     /// Results stay valid for any query that only narrows it.
     scope: Option<String>,
     typed_at: Instant,
+    /// Search only these commits next time, the ones a refresh added; the
+    /// rest were searched already.
+    only: Option<HashSet<String>>,
 }
 
 impl CodeSearch {
@@ -99,10 +116,12 @@ impl CodeSearch {
 }
 
 /// Load `source` into the commits column. A higher generation supersedes the rest.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogRequest {
     pub source: Source,
     pub generation: u64,
+    /// Only the commits these revisions cover, to go on top of the list.
+    pub newer: Option<Vec<String>>,
 }
 
 pub struct DiffRequest {
@@ -295,6 +314,20 @@ pub struct App {
     code_cancel: bool,
     /// The diff that was last scrolled to its first code match.
     jumped: Option<DiffKey>,
+    /// A refresh is loading the commits on top.
+    refreshing: bool,
+    /// Where to go back to once a reload brings the selected commit again.
+    reselect: Option<Reselect>,
+    /// The watcher should look now (see `take_check`).
+    check: bool,
+}
+
+/// The selected commit, file and diff scroll, kept across a reload.
+struct Reselect {
+    sha: String,
+    file_idx: usize,
+    diff_scroll: usize,
+    diff_column: usize,
 }
 
 impl App {
@@ -335,11 +368,15 @@ impl App {
             log_request: Some(LogRequest {
                 source: Source::Log,
                 generation: 0,
+                newer: None,
             }),
             by_sha: HashMap::new(),
             code_generation: 0,
             code_cancel: false,
             jumped: None,
+            refreshing: false,
+            reselect: None,
+            check: false,
         }
     }
 
@@ -353,6 +390,7 @@ impl App {
                     self.settle();
                 }
                 self.notice = None;
+                self.reselect = None;
                 self.handle_key(key);
                 // Any key ends a selection, once the key had a chance to use it
                 // (Enter with --pick-context names the selected lines).
@@ -360,11 +398,16 @@ impl App {
             }
             Msg::Input(Event::Mouse(mouse)) => {
                 self.settle();
+                self.reselect = None;
                 self.handle_mouse(mouse);
             }
+            // Back from another tab or window, where a commit may have happened.
+            Msg::Input(Event::FocusGained) => self.check = true,
             Msg::Input(_) => {}
             // Leftovers from a load that was superseded.
-            Msg::Commits(generation, _) | Msg::LogDone(generation, _)
+            Msg::Commits(generation, _)
+            | Msg::LogDone(generation, _)
+            | Msg::Newer(generation, _)
                 if generation != self.generation => {}
             Msg::Commits(_, batch) => {
                 self.settle();
@@ -373,6 +416,18 @@ impl App {
             Msg::LogDone(_, result) => {
                 self.loading = false;
                 self.log_error = result.err();
+            }
+            Msg::Moved(source, change) => {
+                self.settle();
+                self.moved(source, change);
+            }
+            Msg::Newer(_, result) => {
+                self.refreshing = false;
+                match result {
+                    Ok(commits) => self.prepend_commits(commits),
+                    // Whatever went wrong, a full load sorts it out.
+                    Err(_) => self.reload(),
+                }
             }
             Msg::Diff(key, result) => self.diffs.insert(key, result),
             Msg::CodeHits(generation, hits) => {
@@ -455,7 +510,9 @@ impl App {
         self.log_request = Some(LogRequest {
             source,
             generation: self.generation,
+            newer: None,
         });
+        self.refreshing = false;
         self.commits.clear();
         self.view.clear();
         self.by_sha.clear();
@@ -479,6 +536,7 @@ impl App {
                 error: None,
                 scope: None,
                 typed_at: Instant::now(),
+                only: None,
             }
         });
     }
@@ -500,7 +558,12 @@ impl App {
             return None;
         }
         let fuzzy = self.filter.query().to_owned();
-        let all: Vec<usize> = (0..self.commits.len()).collect();
+        let all: Vec<usize> = match code.only.take() {
+            Some(only) => (0..self.commits.len())
+                .filter(|&i| only.contains(&self.commits[i].sha))
+                .collect(),
+            None => (0..self.commits.len()).collect(),
+        };
         let targets = code_targets(
             &self.commits,
             filter::par_matches(&fuzzy, &self.commits, &all),
@@ -529,7 +592,10 @@ impl App {
         let selected = self.view.get(self.commit_idx).map(|h| h.commit);
         for (sha, paths) in hits {
             let positions = self.by_sha.get(&sha).cloned().unwrap_or_default();
-            code.hits.insert(sha, paths);
+            // A search that started over after a refresh finds some again.
+            if code.hits.insert(sha, paths).is_some() {
+                continue;
+            }
             for i in positions {
                 if let Some(hit) = self.filter.matches(i, &self.commits[i]) {
                     self.view.extend(code.admit(&self.commits, hit));
@@ -537,6 +603,7 @@ impl App {
             }
         }
         self.resort(selected);
+        self.try_reselect();
     }
 
     /// Sorts the view and keeps `selected` (an index into `commits`) selected.
@@ -746,6 +813,138 @@ impl App {
         if !self.filter.is_empty() {
             self.resort(selected);
         }
+        self.try_reselect();
+    }
+
+    /// Whether the watcher should look now. Asks once.
+    pub fn take_check(&mut self) -> bool {
+        mem::take(&mut self.check)
+    }
+
+    /// Follows a change the watcher saw: loads just the new commits on top
+    /// when the history only grew, and everything again otherwise.
+    fn moved(&mut self, source: Source, change: Change) {
+        if source != self.source {
+            return;
+        }
+        match change {
+            // Partial loads don't stack: a change during any load reloads.
+            Change::Grew(revs) if !self.loading && !self.refreshing => {
+                self.generation += 1;
+                self.log_request = Some(LogRequest {
+                    source,
+                    generation: self.generation,
+                    newer: Some(revs),
+                });
+                self.refreshing = true;
+            }
+            _ => self.reload(),
+        }
+    }
+
+    /// Loads everything again, coming back to the selected commit, file and
+    /// scroll once the commit is in, and running `/c` again.
+    fn reload(&mut self) {
+        if self.reselect.is_none() {
+            self.reselect = self.commit().map(|c| Reselect {
+                sha: c.sha.clone(),
+                file_idx: self.file_idx,
+                diff_scroll: self.diff_scroll,
+                diff_column: self.diff_column,
+            });
+        }
+        self.switch_source(self.source);
+        if let Some(code) = &self.code {
+            let pattern = code.pattern.clone();
+            self.restart_code(Some(pattern));
+        }
+        self.commit_idx = 0;
+        self.file_idx = 0;
+        self.reset_diff_scroll();
+        self.notice = Some(match self.source {
+            Source::Log => "history changed, reloaded".into(),
+            Source::Reflog => "reflog updated".into(),
+        });
+    }
+
+    /// Goes back to the commit selected before a reload, once it's in view.
+    fn try_reselect(&mut self) {
+        let Some(want) = &self.reselect else {
+            return;
+        };
+        let Some(&i) = self.by_sha.get(&want.sha).and_then(|is| is.first()) else {
+            return;
+        };
+        let Some(idx) = self.view.iter().position(|h| h.commit == i) else {
+            return;
+        };
+        let want = self.reselect.take().expect("checked above");
+        self.commit_idx = idx;
+        self.file_idx = want.file_idx;
+        self.diff_scroll = want.diff_scroll;
+        self.diff_column = want.diff_column;
+    }
+
+    /// Puts the commits a refresh found on top of the list, in log order,
+    /// keeping the selection on the same commit. `/c` searches just them.
+    fn prepend_commits(&mut self, fresh: Vec<Commit>) {
+        // One may have come in with the full load too, if it landed just then.
+        let fresh: Vec<Commit> = fresh
+            .into_iter()
+            .filter(|c| !self.by_sha.contains_key(&c.sha))
+            .collect();
+        let n = fresh.len();
+        if n == 0 {
+            return;
+        }
+        let selected = self.hit().map(|h| h.commit + n);
+        let old = mem::replace(&mut self.commits, fresh);
+        self.commits.extend(old);
+        for positions in self.by_sha.values_mut() {
+            for i in positions {
+                *i += n;
+            }
+        }
+        for hit in &mut self.view {
+            hit.commit += n;
+        }
+        for i in 0..n {
+            self.by_sha
+                .entry(self.commits[i].sha.clone())
+                .or_default()
+                .push(i);
+            // Under /c, the new commits show once their diffs match.
+            if self.code.is_none()
+                && let Some(hit) = self.filter.matches(i, &self.commits[i])
+            {
+                self.view.push(hit);
+            }
+        }
+        // Equal scores keep log order, so with no query this puts them on top.
+        self.resort(selected);
+        // Row numbers in the list moved.
+        if self.selection.is_some_and(|s| s.pane == Focus::Commits) {
+            self.selection = None;
+        }
+        if let Some(code) = &mut self.code
+            && code.scope.is_some()
+        {
+            self.code_generation += 1;
+            code.generation = self.code_generation;
+            // A finished search only needs the new commits; one still running
+            // starts over on its whole scope, keeping what it found.
+            if code.finished {
+                code.only = Some(self.commits[..n].iter().map(|c| c.sha.clone()).collect());
+            }
+            code.scope = None;
+            code.finished = false;
+            code.progress = (0, 0);
+            let now = Instant::now();
+            code.typed_at = now.checked_sub(CODE_DEBOUNCE).unwrap_or(now);
+            self.code_cancel = true;
+        }
+        let plural = if n == 1 { "" } else { "s" };
+        self.notice = Some(format!("{n} new commit{plural}"));
     }
 
     /// The diff the selection needs, if it isn't cached and wasn't already asked for.

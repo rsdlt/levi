@@ -68,6 +68,9 @@ levi main..HEAD    # what your branch adds to main
 levi v1.0..        # everything since a tag
 ```
 
+He keeps watch while you work. Commit, pull or rebase in another terminal, or let your agent
+do it, and levi catches up within two seconds, without losing your place.
+
 `Enter` prints the selected commit's sha and quits, so levi works as a picker:
 `git show $(levi)`.
 

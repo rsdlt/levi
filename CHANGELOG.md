@@ -7,6 +7,14 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+### Added
+
+- levi follows the repository while it's open. New commits, from a commit or a pull in another
+  terminal or by an agent, show up on top within two seconds, and the status line says how
+  many. An amend, rebase or reset reloads the list. Either way, the search and the selected
+  commit stay. It also checks when the terminal regains focus and when `C-o`'s editor
+  returns.
+
 ## [0.16.0] - 2026-10-18
 
 ### Added

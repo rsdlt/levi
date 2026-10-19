@@ -22,7 +22,9 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use ratatui::crossterm::event::{
+    DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
+};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -42,6 +44,9 @@ Shows the current branch, or the commits of any revision git understands:
   levi main..HEAD     what your branch adds to main
   levi v1.0..         everything since a tag
   levi other-branch   another branch, without checking it out
+
+levi follows the repository: new commits show up on top within two seconds, and
+a rewrite (amend, rebase) reloads the list, keeping your search and selection.
 
 Type to filter commits by subject, author, sha prefix or touched files.
 fzf syntax: 'exact  ^prefix  suffix$  !negate  (space-separated terms all match)
@@ -234,13 +239,21 @@ fn run(terminal: &mut Tui, app: &mut App, root: PathBuf) -> Result<()> {
     let (tx, rx) = mpsc::channel();
     let input = worker::spawn_input(tx.clone());
     let rev = app.rev.clone().unwrap_or_else(|| "HEAD".into());
-    let logs = worker::LogLoader::new(root.clone(), rev, tx.clone());
+    let logs = worker::LogLoader::new(root.clone(), rev.clone(), tx.clone());
+    let watcher = worker::Watcher::spawn(root.clone(), rev, tx.clone());
     let code = worker::CodeSearcher::new(root.clone(), tx.clone());
     let diffs = worker::spawn_diff(root.clone(), tx);
 
     while app.exit.is_none() {
         if let Some(req) = app.take_log_request() {
+            // A full load starts from what's there now; a refresh adds to it.
+            if req.newer.is_none() {
+                watcher.watch(req.source);
+            }
             logs.start(req);
+        }
+        if app.take_check() {
+            watcher.poke();
         }
         if app.take_code_cancel() {
             code.cancel();
@@ -257,6 +270,8 @@ fn run(terminal: &mut Tui, app: &mut App, root: PathBuf) -> Result<()> {
         if let Some(req) = app.take_open() {
             let said = open(terminal, &input, &root, &req);
             app.notice = (!said.is_empty()).then_some(said);
+            // A commit may have been made from the editor.
+            watcher.poke();
         }
         terminal.draw(|frame| ui::draw(frame, app))?;
         // Sleep until something happens, or until a pending code search is due.
@@ -351,14 +366,25 @@ fn repaint(terminal: &mut Tui) -> Result<()> {
     Ok(())
 }
 
-/// Takes the terminal over: raw mode, the alternate screen and the mouse.
+/// Takes the terminal over: raw mode, the alternate screen, the mouse, and
+/// reports of focus coming back, to look for new commits then.
 fn enter() -> Result<()> {
     enable_raw_mode()?;
-    execute!(io::stderr(), EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(
+        io::stderr(),
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableFocusChange
+    )?;
     Ok(())
 }
 
 fn restore() {
     let _ = disable_raw_mode();
-    let _ = execute!(io::stderr(), DisableMouseCapture, LeaveAlternateScreen);
+    let _ = execute!(
+        io::stderr(),
+        DisableFocusChange,
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    );
 }

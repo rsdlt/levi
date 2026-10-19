@@ -196,11 +196,13 @@ pub fn log_commits(root: &Path, shas: &[String]) -> Result<LogStream> {
     stream(cmd, shas)
 }
 
-/// Commit ids of `rev` (a branch, a range like `main..HEAD`, …) in `git log`
+/// Commit ids of `revs` (a branch, a range like `main..HEAD`, …) in `git log`
 /// order, as git lists them. Kills git if dropped early.
-pub fn rev_list(root: &Path, rev: &str) -> Result<RevList> {
+pub fn rev_list(root: &Path, revs: &[&str]) -> Result<RevList> {
     let mut child = git(root)
-        .args(["rev-list", "--end-of-options", rev, "--"])
+        .args(["rev-list", "--end-of-options"])
+        .args(revs)
+        .arg("--")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -210,6 +212,37 @@ pub fn rev_list(root: &Path, rev: &str) -> Result<RevList> {
         lines: BufReader::new(stdout).lines(),
         child,
     })
+}
+
+/// What `rev` resolves to, one line per tip, `^` before excluded ones:
+/// `main..HEAD` gives HEAD's commit and `^` main's. When it changes, the
+/// commits `rev` covers may have.
+pub fn tips(root: &Path, rev: &str) -> Result<Vec<String>> {
+    // `--` makes git read `rev` as a revision only; it echoes it back last.
+    let out = run(git(root).args(["rev-parse", rev, "--"]))?;
+    Ok(String::from_utf8_lossy(&out)
+        .lines()
+        .filter(|l| *l != "--")
+        .map(str::to_owned)
+        .collect())
+}
+
+/// The newest reflog entry: its commit, a selector with a timestamp (so a
+/// checkout of the commit HEAD already is still counts as new) and its
+/// action. Empty when there's no reflog.
+pub fn reflog_tip(root: &Path) -> Result<String> {
+    let out = run(git(root).args(["log", "-g", "-1", "--date=raw", "--format=%H %gd %gs"]))?;
+    Ok(String::from_utf8_lossy(&out).into_owned())
+}
+
+/// Whether `ancestor` is `descendant` or one of its ancestors.
+pub fn is_ancestor(root: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
+    let out = output(git(root).args(["merge-base", "--is-ancestor", ancestor, descendant]))?;
+    match out.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => bail!("git: {}", String::from_utf8_lossy(&out.stderr).trim()),
+    }
 }
 
 pub struct RevList {
@@ -842,7 +875,7 @@ mod tests {
             repo.commit(n);
         }
         let shas = |rev| -> Vec<String> {
-            rev_list(repo.path(), rev)
+            rev_list(repo.path(), &[rev])
                 .unwrap()
                 .collect::<Result<_>>()
                 .unwrap()
@@ -851,6 +884,38 @@ mod tests {
         assert_eq!(all.len(), 3);
         assert_eq!(shas("HEAD~2.."), all[..2]);
         assert_eq!(shas("HEAD~1"), all[1..]);
+    }
+
+    #[test]
+    fn tips_follow_what_the_revision_covers() {
+        let repo = Repo::new();
+        repo.commit("one");
+        repo.git(&["branch", "base"]);
+        repo.commit("two");
+        let head = tips(repo.path(), "HEAD").unwrap();
+        assert_eq!(head.len(), 1);
+        let range = tips(repo.path(), "base..HEAD").unwrap();
+        assert_eq!(range.len(), 2);
+        assert_eq!(range[0], head[0]);
+        assert!(range[1].starts_with('^'));
+
+        repo.commit("three");
+        let grown = tips(repo.path(), "HEAD").unwrap();
+        assert_ne!(grown, head);
+        assert!(is_ancestor(repo.path(), &head[0], &grown[0]).unwrap());
+        assert!(!is_ancestor(repo.path(), &grown[0], &head[0]).unwrap());
+        assert!(tips(repo.path(), "no-such-branch").is_err());
+    }
+
+    #[test]
+    fn the_reflog_tip_changes_on_every_entry() {
+        let repo = Repo::new();
+        repo.commit("one");
+        let first = reflog_tip(repo.path()).unwrap();
+        assert!(first.contains("commit"), "{first}");
+        repo.commit("two");
+        let second = reflog_tip(repo.path()).unwrap();
+        assert_ne!(first, second);
     }
 
     #[test]

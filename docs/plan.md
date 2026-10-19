@@ -254,6 +254,38 @@ All five steps are done.
   handled, so Enter still sees it.
 - Integration tests in `tests/cli.rs` run the real binary for every pre-TUI path.
 
+## Refresh
+
+levi follows the repository while it's open: a commit, pull, amend or rebase in another
+terminal shows up without a restart, and without a key or a setting.
+
+- **Noticing.** A watcher thread asks git every 2 s what the shown ground resolves to:
+  `git rev-parse <rev> --` (one line per tip, `^` for excluded ones; `HEAD` by default), or
+  under `/r` the newest reflog entry (`git log -g -1 --date=raw`, whose selector carries a
+  timestamp, so a checkout of the same commit still counts). A few ms of git each time; no
+  file watcher, which would add a dependency and miss worktrees, packed refs and bare repos.
+  It also checks at once when the terminal regains focus (focus reporting, ignored by
+  terminals without it) and when `C-o`'s editor returns. `--filter` doesn't watch.
+- **The baseline** is taken in the main thread right before each full load starts, so
+  nothing committed between the two goes unseen. A commit landing after the baseline but
+  before the load's `rev-list` is loaded twice at worst: prepends skip shas already shown.
+- **Growing** (every old tip is an ancestor of its new one, excluded tips unchanged: commit,
+  pull, fast-forward): only `<new tips> ^<old tips> <excluded>` loads, in one `git log`, and
+  goes on top of the list. On top, not in date order: a pull that brings older-dated commits
+  shows them first, as what just arrived.
+- **Anything else** (amend, rebase, reset, another branch checked out, and every reflog
+  change) reloads in full, the way switching to `/r` does. A change during any load also
+  reloads in full, rather than stacking partial loads.
+- **What stays:** the query, focus and diff cache (commits never change, so `(sha, path)`
+  stays valid). The selected commit stays selected by sha: after a prepend at once, after a
+  reload as soon as its batch arrives, with its file and diff scroll. If a rewrite dropped it,
+  the selection rests on the top commit.
+- **`/c`:** after a prepend, a finished search runs on the new commits only and adds their
+  hits; an unfinished one starts over on its whole scope, keeping the hits it had. A reload
+  reruns it.
+- **The status line** says what happened until the next key or click: `2 new commits`,
+  `history changed, reloaded`, `reflog updated`.
+
 ## Commands
 
 Slash commands live in the search bar (`src/query.rs`). They're whole words only, so `src/config`

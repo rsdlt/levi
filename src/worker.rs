@@ -5,7 +5,7 @@ use std::mem;
 use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, MouseButton, MouseEventKind};
 
-use crate::app::{CodeRequest, CodeTarget, DiffRequest, LogRequest, Msg};
+use crate::app::{Change, CodeRequest, CodeTarget, DiffRequest, LogRequest, Msg};
 use crate::git::{self, Commit};
 use crate::query::Source;
 use crate::syntax;
@@ -115,12 +115,23 @@ impl LogLoader {
     /// Loads `req.source` in the background. Any load already running stops at
     /// its next commit or chunk, killing its git.
     pub fn start(&self, req: LogRequest) {
-        let LogRequest { source, generation } = req;
+        let LogRequest {
+            source,
+            generation,
+            newer,
+        } = req;
         self.current.store(generation, Ordering::SeqCst);
         let (root, tx, current) = (self.root.clone(), self.tx.clone(), self.current.clone());
         let rev = self.rev.clone();
         let live = move || current.load(Ordering::SeqCst) == generation;
         thread::spawn(move || {
+            if let Some(revs) = newer {
+                let commits = load_newer(&root, &revs).map_err(|e| e.to_string());
+                if live() {
+                    let _ = tx.send(Msg::Newer(generation, commits));
+                }
+                return;
+            }
             let result = match source {
                 Source::Log => {
                     load_parallel(&root, &rev, &tx, generation, live, FIRST_CHUNK, LOG_CHUNK)
@@ -134,6 +145,131 @@ impl LogLoader {
             }
         });
     }
+}
+
+/// The commits `revs` covers, in log order, all at once: what a refresh adds
+/// on top is usually a handful.
+fn load_newer(root: &Path, revs: &[String]) -> Result<Vec<Commit>> {
+    let revs: Vec<&str> = revs.iter().map(String::as_str).collect();
+    let shas: Vec<String> = git::rev_list(root, &revs)?.collect::<Result<_>>()?;
+    if shas.is_empty() {
+        return Ok(Vec::new());
+    }
+    git::log_commits(root, &shas)?.collect()
+}
+
+/// How often the watcher asks git whether what levi shows has moved.
+const WATCH_INTERVAL: Duration = Duration::from_secs(2);
+
+/// What a source resolved to at one look.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Tip {
+    /// `git rev-parse` of the revision: its tips, `^` before excluded ones.
+    Log(Vec<String>),
+    /// The newest reflog entry.
+    Reflog(String),
+}
+
+/// Notices when what levi shows changes under it: a commit, a pull, an amend,
+/// a rebase, a new reflog entry. It asks git every `WATCH_INTERVAL`, or at
+/// once when poked, and reports a change as `Msg::Moved`.
+pub struct Watcher {
+    root: PathBuf,
+    /// What the log shows: `HEAD`, or the revision levi was started with.
+    rev: String,
+    /// The source being watched and what it resolved to when last seen.
+    seen: Arc<Mutex<Option<(Source, Tip)>>>,
+    poke: Sender<()>,
+}
+
+impl Watcher {
+    pub fn spawn(root: PathBuf, rev: String, tx: Sender<Msg>) -> Watcher {
+        let seen = Arc::new(Mutex::new(None::<(Source, Tip)>));
+        let (poke, poked) = mpsc::channel();
+        let watcher = Watcher {
+            root: root.clone(),
+            rev: rev.clone(),
+            seen: seen.clone(),
+            poke,
+        };
+        thread::spawn(move || {
+            loop {
+                if let Err(RecvTimeoutError::Disconnected) = poked.recv_timeout(WATCH_INTERVAL) {
+                    return;
+                }
+                let Some((source, old)) = seen.lock().expect("watch lock").clone() else {
+                    continue;
+                };
+                // git failing, say for a branch deleted meanwhile, keeps what's shown.
+                let Some(new) = look(&root, &rev, source) else {
+                    continue;
+                };
+                if new == old {
+                    continue;
+                }
+                let change = match (&old, &new) {
+                    (Tip::Log(old), Tip::Log(new)) => {
+                        grown(&root, old, new).map_or(Change::Rewritten, Change::Grew)
+                    }
+                    _ => Change::Rewritten,
+                };
+                {
+                    let mut seen = seen.lock().expect("watch lock");
+                    // `watch` started over meanwhile, from a newer look.
+                    if seen.as_ref() != Some(&(source, old)) {
+                        continue;
+                    }
+                    *seen = Some((source, new));
+                }
+                if tx.send(Msg::Moved(source, change)).is_err() {
+                    return;
+                }
+            }
+        });
+        watcher
+    }
+
+    /// Watches `source` from what it resolves to now. Called right before its
+    /// full load starts, so nothing that lands in between goes unseen.
+    pub fn watch(&self, source: Source) {
+        let tip = look(&self.root, &self.rev, source);
+        *self.seen.lock().expect("watch lock") = tip.map(|tip| (source, tip));
+    }
+
+    /// Looks now rather than at the next tick, like when the terminal regains
+    /// focus or an editor returns.
+    pub fn poke(&self) {
+        let _ = self.poke.send(());
+    }
+}
+
+fn look(root: &Path, rev: &str, source: Source) -> Option<Tip> {
+    match source {
+        Source::Log => git::tips(root, rev).ok().map(Tip::Log),
+        Source::Reflog => git::reflog_tip(root).ok().map(Tip::Reflog),
+    }
+}
+
+/// The revisions that cover just the new commits, if `old` only grew into
+/// `new`: the same excluded tips, and each tip an ancestor of its new one.
+/// `None` for anything else, like an amend or a rebase.
+fn grown(root: &Path, old: &[String], new: &[String]) -> Option<Vec<String>> {
+    let split = |tips: &[String]| -> (Vec<String>, Vec<String>) {
+        tips.iter().cloned().partition(|t| !t.starts_with('^'))
+    };
+    let ((old_tips, old_excluded), (new_tips, new_excluded)) = (split(old), split(new));
+    if old_excluded != new_excluded || old_tips.len() != new_tips.len() {
+        return None;
+    }
+    for (o, n) in old_tips.iter().zip(&new_tips) {
+        if o != n && !git::is_ancestor(root, o, n).ok()? {
+            return None;
+        }
+    }
+    let mut revs = new_tips;
+    revs.extend(old_tips.iter().map(|t| format!("^{t}")));
+    revs.extend(new_excluded);
+    Some(revs)
 }
 
 /// Commits in the first chunk of a parallel load, kept small for a fast first frame.
@@ -223,7 +359,7 @@ fn load_parallel(
 
     let (producer_root, rev) = (root.to_owned(), rev.to_owned());
     thread::spawn(move || {
-        let revs = match git::rev_list(&producer_root, &rev) {
+        let revs = match git::rev_list(&producer_root, &[&rev]) {
             Ok(revs) => revs,
             Err(e) => {
                 let _ = event_tx.send(LogEvent::Chunk(0, Err(e)));
@@ -508,6 +644,7 @@ pub fn spawn_diff(root: PathBuf, tx: Sender<Msg>) -> Sender<DiffRequest> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::App;
     use crate::testutil::Repo;
 
     fn history() -> Repo {
@@ -531,6 +668,225 @@ mod tests {
     /// Everything but the relative date, which can tick between two loads.
     fn key(c: &Commit) -> (String, String, Vec<git::FileChange>) {
         (c.sha.clone(), c.subject.clone(), c.files.clone())
+    }
+
+    fn next_move(rx: &mpsc::Receiver<Msg>) -> (Source, Change) {
+        loop {
+            match rx.recv_timeout(Duration::from_secs(5)).expect("a move") {
+                Msg::Moved(source, change) => return (source, change),
+                _ => continue,
+            }
+        }
+    }
+
+    #[test]
+    fn the_watcher_tells_growth_from_rewrites() {
+        let repo = Repo::new();
+        repo.commit("one");
+        let (tx, rx) = mpsc::channel();
+        let watcher = Watcher::spawn(repo.path().to_path_buf(), "HEAD".into(), tx);
+        watcher.watch(Source::Log);
+
+        repo.commit("two");
+        repo.commit("three");
+        watcher.poke();
+        let (source, change) = next_move(&rx);
+        assert_eq!(source, Source::Log);
+        let Change::Grew(revs) = change else {
+            panic!("a commit on top is growth, got {change:?}");
+        };
+        let newer = load_newer(repo.path(), &revs).unwrap();
+        let subjects: Vec<&str> = newer.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(
+            subjects,
+            ["three", "two"],
+            "just the new ones, in log order"
+        );
+
+        repo.git(&[
+            "commit",
+            "-q",
+            "--amend",
+            "--allow-empty",
+            "-m",
+            "three, amended",
+        ]);
+        watcher.poke();
+        assert_eq!(next_move(&rx), (Source::Log, Change::Rewritten));
+
+        watcher.watch(Source::Reflog);
+        repo.git(&["checkout", "-q", "HEAD~1"]);
+        watcher.poke();
+        assert_eq!(next_move(&rx), (Source::Reflog, Change::Rewritten));
+    }
+
+    #[test]
+    fn a_range_grows_only_while_its_base_stays() {
+        let repo = Repo::new();
+        repo.commit("root");
+        repo.git(&["branch", "base"]);
+        repo.commit("on top");
+        let (tx, rx) = mpsc::channel();
+        let watcher = Watcher::spawn(repo.path().to_path_buf(), "base..HEAD".into(), tx);
+        watcher.watch(Source::Log);
+
+        repo.commit("more");
+        watcher.poke();
+        let (_, change) = next_move(&rx);
+        let Change::Grew(revs) = change else {
+            panic!("expected growth, got {change:?}");
+        };
+        let newer = load_newer(repo.path(), &revs).unwrap();
+        assert_eq!(newer.len(), 1);
+        assert_eq!(newer[0].subject, "more");
+
+        repo.git(&["branch", "-f", "base", "HEAD~1"]);
+        watcher.poke();
+        assert_eq!(next_move(&rx), (Source::Log, Change::Rewritten));
+    }
+
+    /// An app with `repo`'s log loaded, as the loader would leave it.
+    fn loaded(repo: &Repo) -> App {
+        let mut app = App::new();
+        let req = app.take_log_request().unwrap();
+        app.update(Msg::Commits(req.generation, repo.log()));
+        app.update(Msg::LogDone(req.generation, Ok(())));
+        app
+    }
+
+    /// Plays the watcher and the loader for a commit made after `before`.
+    fn refresh(app: &mut App, repo: &Repo, before: &[String]) {
+        let after = git::tips(repo.path(), "HEAD").unwrap();
+        let change = grown(repo.path(), before, &after).map_or(Change::Rewritten, Change::Grew);
+        app.update(Msg::Moved(Source::Log, change));
+        let req = app.take_log_request().expect("a load");
+        match req.newer {
+            Some(revs) => {
+                let newer = load_newer(repo.path(), &revs).map_err(|e| e.to_string());
+                app.update(Msg::Newer(req.generation, newer));
+            }
+            None => {
+                app.update(Msg::Commits(req.generation, repo.log()));
+                app.update(Msg::LogDone(req.generation, Ok(())));
+            }
+        }
+    }
+
+    fn press(app: &mut App, code: ratatui::crossterm::event::KeyCode) {
+        use ratatui::crossterm::event::{Event, KeyEvent, KeyModifiers};
+        let key = KeyEvent::new(code, KeyModifiers::NONE);
+        app.update(Msg::Input(Event::Key(key)));
+    }
+
+    #[test]
+    fn new_commits_go_on_top_and_the_selection_stays() {
+        use ratatui::crossterm::event::KeyCode;
+        let repo = history();
+        let mut app = loaded(&repo);
+        press(&mut app, KeyCode::Down);
+        let selected = app.commit().unwrap().sha.clone();
+        let before = git::tips(repo.path(), "HEAD").unwrap();
+
+        repo.write("n.txt", "new\n");
+        repo.commit("fresh one");
+        repo.commit("fresh two");
+        refresh(&mut app, &repo, &before);
+
+        let shown: Vec<_> = app.commits.iter().map(key).collect();
+        let fresh: Vec<_> = repo.log().iter().map(key).collect();
+        assert_eq!(shown, fresh, "the same as loading it all again");
+        assert_eq!(app.commit().unwrap().sha, selected);
+        assert_eq!(app.notice.as_deref(), Some("2 new commits"));
+        let top: Vec<&str> = app.view[..2]
+            .iter()
+            .map(|h| app.commits[h.commit].subject.as_str())
+            .collect();
+        assert_eq!(top, ["fresh two", "fresh one"]);
+
+        // A query keeps working over the new commits, by their index.
+        for c in "fresh one".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        app.settle();
+        assert_eq!(app.commit().unwrap().subject, "fresh one");
+    }
+
+    #[test]
+    fn a_rewrite_reloads_and_comes_back_to_the_selection() {
+        use ratatui::crossterm::event::KeyCode;
+        let repo = history();
+        let mut app = loaded(&repo);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        let selected = app.commit().unwrap().sha.clone();
+        let before = git::tips(repo.path(), "HEAD").unwrap();
+
+        repo.git(&[
+            "commit",
+            "-q",
+            "--amend",
+            "--allow-empty",
+            "-m",
+            "commit 4, amended",
+        ]);
+        refresh(&mut app, &repo, &before);
+
+        assert_eq!(app.notice.as_deref(), Some("history changed, reloaded"));
+        assert_eq!(app.commits[0].subject, "commit 4, amended");
+        assert_eq!(
+            app.commit().unwrap().sha,
+            selected,
+            "still on the same commit"
+        );
+    }
+
+    #[test]
+    fn code_search_covers_new_commits() {
+        let repo = history();
+        let mut app = loaded(&repo);
+        app.query = "/c needle".into();
+        let search = |app: &mut App| {
+            // Settled first, so the debounce counts from the query, not after.
+            app.settle();
+            let req = app
+                .take_code_request(Instant::now() + crate::app::CODE_DEBOUNCE)
+                .expect("a code search");
+            let hits = search_now(repo.path(), &req);
+            app.update(Msg::CodeHits(req.generation, hits));
+            app.update(Msg::CodeDone(req.generation, Ok(())));
+            req.targets.len()
+        };
+        let all = search(&mut app);
+        assert!(app.view.is_empty());
+        let before = git::tips(repo.path(), "HEAD").unwrap();
+
+        repo.write("n.txt", "needle\n");
+        repo.commit("hide a needle");
+        refresh(&mut app, &repo, &before);
+        assert!(app.view.is_empty(), "not shown before its diff matches");
+        assert_eq!(
+            search(&mut app),
+            1,
+            "only the new commit is searched, not {all}"
+        );
+        assert_eq!(app.commit().unwrap().subject, "hide a needle");
+    }
+
+    #[test]
+    fn a_change_during_a_load_reloads() {
+        let repo = history();
+        let mut app = App::new();
+        let first = app.take_log_request().unwrap();
+        app.update(Msg::Moved(Source::Log, Change::Grew(vec!["HEAD".into()])));
+        let req = app.take_log_request().unwrap();
+        assert_eq!(
+            req.newer, None,
+            "a full load, not one stacked on a partial one"
+        );
+        assert!(req.generation > first.generation);
+        // The first load's batches are dropped from here on.
+        app.update(Msg::Commits(first.generation, repo.log()));
+        assert!(app.commits.is_empty());
     }
 
     #[test]
@@ -697,6 +1053,7 @@ mod tests {
         LogLoader::new(root, "HEAD".into(), tx).start(LogRequest {
             source: Source::Log,
             generation: 1,
+            newer: None,
         });
         let (mut first, mut count) = (None, 0);
         for msg in rx {
