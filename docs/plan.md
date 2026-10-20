@@ -62,7 +62,7 @@ cut mid-hint. One row, always on: no toggle key, since every printable key belon
 | 1 | Column a source | **Commit log** (`git log`) by default; `/r` switches to the reflog (see Commands). |
 | 2 | Scope | **Current branch** (`HEAD`) by default, or one revision given as the only argument (`levi main..HEAD`). No `--all`. |
 | 3 | Merge commits | **Diff against first parent** (`--diff-merges=first-parent` for files and diff). History is *not* first-parent-only: commits from merged branches still show. |
-| 4 | Uncommitted changes | **Out for now.** No working-tree pseudo-commit. |
+| 4 | Uncommitted changes | **A row on top of the log**, `working uncommitted changes` in red, while the working tree differs from HEAD (see Uncommitted changes). Out at first; it came in once agents made "what has it changed but not committed?" the most common question. |
 | 5 | Git backend | Shell out to the `git` CLI (no `git2`/`gix`): respects user config, no C build, small binary. |
 | 6 | Fuzzy matching | `nucleo-matcher` (fzf-compatible syntax: smart case, `^`, `$`, `'`, `!`). |
 | 7 | Diff rendering | The commit message on top, code in syntax colors (the terminal's 16, one fixed mapping) with a green/red `+`/`-` bar and removed lines dimmed, changed words in reverse video (see Diff pane). Where the terminal shows truecolor and gives its background, changed rows also get a soft tint mixed from it, and changed words a stronger one. Files in unknown languages keep plain coloring (`+` green, `-` red); `@@` cyan, headers dim. Syntax colors were out of scope at first, and came in once reading a big repo under heavy agent-driven change showed how much they matter. No themes, no settings, no per-language tweaks. |
@@ -136,9 +136,9 @@ like a real terminal: 48–55 ms (50 median over 7 runs); without an answer it w
 | `PgUp/PgDn`, `C-u/C-d` | scroll the diff |
 | `S-↑/S-↓` | jump the diff to the previous/next `@@` hunk, putting it on top; with `/c` on, to the previous/next matching line instead, with 3 lines of context and sideways into view. Past a file's last stop it moves to the next file and lands on its first (backwards: the previous file's last), like vim's `]c`, waiting for that diff to load if needed. Stops at the commit's ends, works from any pane |
 | `S-←/S-→` | scroll the diff sideways, 8 columns (Alt-arrows would be word jumps in macOS terminals) |
-| `Enter` | print the selected sha to stdout and quit (`git checkout $(levi)`) |
+| `Enter` | print the selected sha to stdout and quit (`git checkout $(levi)`); on the uncommitted changes, which have no sha, the status line says so and levi stays |
 | `C-o` | open the selected file in an editor at the new-file line shown at the top of the diff (from the hunk headers; a removed line maps to where it was; above the first hunk, its first line). Inside Neovim's terminal (`$NVIM` set), `nvim --server $NVIM --remote-expr` runs `tabedit +N file` there, so levi keeps its own tab and nothing nests. Otherwise `$VISUAL`/`$EDITOR`/`vi` runs through `sh -c '$EDITOR "$@"'` (like git) with `+N file` (`file:N` for hx/zed/subl, `--goto file:N` for code/cursor), and gets the terminal: the input thread parks first (it polls in 100ms spells and acknowledges a pause, so no key is stolen), levi leaves the alternate screen, and comes back where it was. The file opens from the working tree, which may have moved on since the commit. When it isn't there (deleted, renamed, or a bare repo), `git cat-file blob <sha>:<path>` (the parent's, `<sha>^:`, for a file the commit deletes, with the line taken from the diff's old side) goes to a read-only copy at `$TMPDIR/levi-<full sha>[-parent]/<path>`, which keeps the name for syntax highlighting; the status says it's read-only history. Another editor's copy is deleted when it quits; Neovim's stays, since its buffer may still be open |
-| `C-y` | copy the selected commit's full sha to the clipboard and stay ("yank"); the status line says `copied <short>` until the next key |
+| `C-y` | copy the selected commit's full sha to the clipboard and stay ("yank"); the status line says `copied <short>` until the next key, or that the uncommitted changes have no sha |
 | `C-w` | delete the query's last word and the spaces after it, as in a shell (`C-u` can't clear the line: it scrolls the diff) |
 | `Esc` | clear the query, or quit if it's already empty |
 | `C-c` | quit |
@@ -307,7 +307,60 @@ terminal shows up without a restart, and without a key or a setting.
   hits; an unfinished one starts over on its whole scope, keeping the hits it had. A reload
   reruns it.
 - **The status line** says what happened until the next key or click: `2 new commits`,
-  `history changed, reloaded`, `reflog updated`.
+  `history changed, reloaded`, `reflog updated`, `working tree changed`.
+
+## Uncommitted changes
+
+While the working tree differs from HEAD, the commits column starts with a row for it:
+`working uncommitted changes`, all in red, as `git status` shows what isn't committed. Its
+files keep their usual colors, plus `?` for untracked ones; red on them would read as
+deletions. It answers what an agent changed but hasn't committed, with the same search, diff
+and keys as any commit.
+
+- **One row.** Staged and unstaged changes count as one, against HEAD: the question is what
+  changed since the last commit, and two rows would bring in git's index. Untracked files
+  that git doesn't ignore are in it, since agents create files all the time; at most 1,000,
+  so a big directory nobody ignored can't flood the files column.
+- **Where.** Only on ground that ends at HEAD: no revision, or one whose tip is HEAD's commit
+  when levi starts (`main..HEAD`, `main..` while on a branch off main). Not in the reflog, not
+  in a bare repository, not in `--filter`, whose lines are `<sha> <subject>` that `git show`
+  can read. Gone when the tree is clean.
+- **Never writes.** `git status` and `git diff` refresh the index, which writes to `.git`.
+  The list comes from `git --no-optional-locks status --porcelain=v2 -z
+  --untracked-files=all`, which then doesn't; diffs and `/c` use the plumbing `git
+  diff-index`, which never refreshes (porcelain `git diff` does, `--no-optional-locks` or
+  not). A test checks the index is byte for byte the same after all of them.
+- **The status letter** is X and Y combined against HEAD: `A` if staged as new, `D` if gone
+  from the index or the tree, `R`/`C` for a staged rename or copy (paired with `-M`), `T` for a
+  type change, `U` for a conflict, `M` otherwise. A file added and then deleted again isn't
+  listed: against HEAD, nothing changed.
+- **The diff** starts with `Uncommitted changes on <branch>` and `On top of <short>
+  <subject>` (Meta lines, so the colors are a commit header's), then `git diff-index --patch
+  -M HEAD -- [old] <path>`, or `git diff --no-index /dev/null <path>` for an untracked file
+  (which exits 1 when they differ, always here).
+- **Following.** The watcher (see Refresh) also runs the status every 2 s, at once at
+  startup, and when poked, and reports when a fingerprint changes: the status output plus
+  each listed file's size and mtime, since editing an already modified file doesn't change
+  the status. git.git's tree (4,857 files): 17 ms a look.
+- **The row's sha** is `working:<n>`, `n` counting the reports. Not hex, so no sha prefix
+  matches it. A new state is a new sha, so diffs and `/c` results of an older one have other
+  keys: the diff cache needs no eviction, and a late result can't be taken for the current
+  one. While the new diff loads, the last one stays shown, so the pane doesn't flicker as an
+  agent writes; the selection, file and scroll stay too.
+- **Selection.** The first report selects the row if the selection is still on top, so levi
+  opens on what changed since the last commit; otherwise the selected commit stays. When the
+  row goes (all committed), the top commit is selected. New commits a refresh finds go below
+  the row.
+- **`/c`** searches it on its own, beside the commits' search: the tree can change every few
+  seconds, and restarting a 6 s search each time would never let it finish. `git diff-index
+  -G` (same literal, smart-case pattern) finds tracked files; untracked ones are read and
+  matched line by line, skipping binary files and files over 8 MiB. It searches when the
+  commits' search starts and again whenever the tree changes, keeping the last result until
+  the new one is in; a result for an older state is dropped.
+- **Keys.** Enter and `C-y` say the row has no sha, rather than print or copy one that
+  `git show` can't read. With `--pick-context`, Enter prints `the uncommitted changes,
+  src/ui.rs lines 27-40`. `C-o` opens the working tree's file; one deleted in the tree opens
+  read-only as HEAD has it.
 
 ## Commands
 
@@ -357,7 +410,6 @@ next commit (killing its git), and late messages from old generations are droppe
 ## Later (not now)
 
 - `--all` branches.
-- Working-tree pseudo-commit at the top of column a.
 - Optional `delta` piping / syntax highlighting.
 - Sending what's on screen to a coding agent. Done for herdr users: `levi --pick-context` plus
   the herdr plugin in `herdr/`, which types the pick into the agent's input (herdr can send

@@ -1,5 +1,8 @@
 //! Thin layer over the `git` CLI: repo discovery, streaming log, per-file diffs.
 
+use std::collections::hash_map::DefaultHasher;
+use std::fs;
+use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -53,6 +56,8 @@ pub enum Status {
     Renamed,
     Copied,
     TypeChanged,
+    /// A new file git doesn't track yet: only in the uncommitted changes.
+    Untracked,
     Other(char),
 }
 
@@ -77,6 +82,7 @@ impl Status {
             Status::Renamed => 'R',
             Status::Copied => 'C',
             Status::TypeChanged => 'T',
+            Status::Untracked => '?',
             Status::Other(c) => c,
         }
     }
@@ -424,10 +430,17 @@ fn parse_record(record: &[u8]) -> Result<Commit> {
             action: action.to_owned(),
         });
     }
+    commit.files = parse_changes(tokens)?;
+    Ok(commit)
+}
 
+/// `STATUS\0path\0` entries, as `--name-status -z` prints them; renames and
+/// copies carry `old\0new\0`.
+fn parse_changes<'a>(tokens: impl Iterator<Item = &'a str>) -> Result<Vec<FileChange>> {
     let mut tokens = tokens
         .map(|t| t.trim_start_matches('\n'))
         .filter(|t| !t.is_empty());
+    let mut files = Vec::new();
     while let Some(token) = tokens.next() {
         let status = Status::parse(token);
         let first = tokens.next().context("log record: status without path")?;
@@ -445,9 +458,9 @@ fn parse_record(record: &[u8]) -> Result<Commit> {
                 old_path: None,
             }
         };
-        commit.files.push(change);
+        files.push(change);
     }
-    Ok(commit)
+    Ok(files)
 }
 
 /// Commits whose diffs add or remove a line containing `pattern`, out of `shas`,
@@ -560,10 +573,269 @@ impl Drop for CodeStream {
     }
 }
 
+/// Stands in for a sha on the row of uncommitted changes, followed by a number
+/// that grows whenever they change, so diffs and code hits of an older state
+/// have other keys and are never taken for the current one. Not hex, so no sha
+/// prefix matches it.
+pub const WORKING: &str = "working:";
+
+pub fn is_working(sha: &str) -> bool {
+    sha.starts_with(WORKING)
+}
+
+/// Untracked files listed at most, so a big directory nobody ignored doesn't
+/// flood the files column.
+const MAX_UNTRACKED: usize = 1000;
+
+/// Untracked files bigger than this aren't searched by `/c`.
+const MAX_SEARCHED: u64 = 8 << 20;
+
+/// How the working tree differs from HEAD.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Working {
+    /// Changed files, staged or not, then untracked ones.
+    pub files: Vec<FileChange>,
+    /// Changes whenever any of them does, even when the list stays the same.
+    pub fingerprint: u64,
+}
+
+/// A git command that reads the working tree without writing anything.
+/// `--no-optional-locks` keeps `git status` from refreshing the index; the
+/// porcelain `git diff` refreshes it regardless, so diffs use the plumbing
+/// `git diff-index`, which never does.
+fn git_reading(root: &Path) -> Command {
+    let mut cmd = git(root);
+    cmd.arg("--no-optional-locks");
+    cmd
+}
+
+/// Whether levi shows the uncommitted changes: in a work tree, when what it
+/// shows ends at HEAD (no revision, or one whose tip is HEAD's commit, like
+/// `main..HEAD`).
+pub fn shows_working(root: &Path, rev: Option<&str>) -> bool {
+    let inside = output(git(root).args(["rev-parse", "--is-inside-work-tree"]));
+    if !inside.is_ok_and(|o| o.stdout.starts_with(b"true")) {
+        return false;
+    }
+    let Some(rev) = rev else {
+        return true;
+    };
+    let (Ok(head), Ok(tips)) = (tips(root, "HEAD"), tips(root, rev)) else {
+        return false;
+    };
+    head.first().is_some_and(|head| tips.contains(head))
+}
+
+/// The uncommitted changes against HEAD: staged and unstaged as one, then
+/// untracked files git doesn't ignore.
+pub fn working(root: &Path) -> Result<Working> {
+    let out =
+        run(git_reading(root).args(["status", "--porcelain=v2", "-z", "--untracked-files=all"]))?;
+    let files = parse_status(&String::from_utf8_lossy(&out));
+    let mut hasher = DefaultHasher::new();
+    out.hash(&mut hasher);
+    for file in &files {
+        if let Ok(meta) = fs::symlink_metadata(root.join(&file.path)) {
+            (meta.len(), meta.modified().ok()).hash(&mut hasher);
+        }
+    }
+    Ok(Working {
+        files,
+        fingerprint: hasher.finish(),
+    })
+}
+
+/// Reads `git status --porcelain=v2 -z` as changes against HEAD: what's staged
+/// (X) and what isn't (Y) as one status. A file added and then deleted again
+/// has none. Untracked files go last, up to `MAX_UNTRACKED`.
+fn parse_status(text: &str) -> Vec<FileChange> {
+    let mut files = Vec::new();
+    let mut untracked = Vec::new();
+    let mut tokens = text.split('\0').filter(|t| !t.is_empty());
+    while let Some(entry) = tokens.next() {
+        // Field counts before the path: it may hold spaces.
+        let (fields, kind) = match entry.as_bytes()[0] {
+            b'1' => (9, 1),
+            b'2' => (10, 2),
+            b'u' => (11, 3),
+            b'?' => {
+                if untracked.len() < MAX_UNTRACKED {
+                    untracked.push(FileChange {
+                        status: Status::Untracked,
+                        path: entry[2..].to_owned(),
+                        old_path: None,
+                    });
+                }
+                continue;
+            }
+            _ => continue,
+        };
+        let parts: Vec<&str> = entry.splitn(fields, ' ').collect();
+        let (Some(xy), Some(path)) = (parts.get(1), parts.get(fields - 1)) else {
+            continue;
+        };
+        let (x, y) = (
+            xy.as_bytes()[0],
+            xy.as_bytes().get(1).copied().unwrap_or(b'.'),
+        );
+        // A rename or copy is followed by where it came from.
+        let old_path = (kind == 2).then(|| tokens.next().unwrap_or_default().to_owned());
+        let status = match (x, y) {
+            _ if kind == 3 => Status::Other('U'),
+            (b'A', b'D') => continue,
+            (b'A', _) => Status::Added,
+            (b'D', _) | (_, b'D') => Status::Deleted,
+            (b'R', _) => Status::Renamed,
+            (b'C', _) => Status::Copied,
+            (b'T', _) | (_, b'T') => Status::TypeChanged,
+            _ => Status::Modified,
+        };
+        files.push(FileChange {
+            status,
+            path: (*path).to_owned(),
+            old_path: old_path.filter(|_| status.has_source()),
+        });
+    }
+    files.extend(untracked);
+    files
+}
+
+/// Untracked files git doesn't ignore, up to `MAX_UNTRACKED`.
+fn untracked(root: &Path) -> Result<Vec<String>> {
+    let out = run(git_reading(root).args(["ls-files", "--others", "--exclude-standard", "-z"]))?;
+    Ok(String::from_utf8_lossy(&out)
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .take(MAX_UNTRACKED)
+        .map(str::to_owned)
+        .collect())
+}
+
+/// What `diff` shows for the uncommitted changes: a header naming the branch
+/// and the commit they sit on, a NUL, then the file's diff against HEAD, or for
+/// an untracked file, all of it as added.
+fn working_diff(root: &Path, file: Option<&FileChange>) -> Result<String> {
+    let mut text = working_header(root);
+    text.push('\0');
+    let Some(file) = file else {
+        return Ok(text);
+    };
+    let patch = if file.status == Status::Untracked {
+        let out = output(git(root).args([
+            "diff",
+            "--no-index",
+            "--no-color",
+            "--no-ext-diff",
+            "--",
+            "/dev/null",
+            &file.path,
+        ]))?;
+        // It exits 1 when the files differ, which they always do here.
+        if out.status.code() != Some(1) {
+            bail!("git: {}", String::from_utf8_lossy(&out.stderr).trim());
+        }
+        out.stdout
+    } else {
+        let mut cmd = git_reading(root);
+        // Plumbing pairs renames only when asked.
+        cmd.args(["diff-index", "--patch", "-M", "HEAD", "--"]);
+        if let Some(old) = &file.old_path {
+            cmd.arg(old);
+        }
+        run(cmd.arg(&file.path))?
+    };
+    text.push_str(&String::from_utf8_lossy(&patch));
+    Ok(text)
+}
+
+/// `Uncommitted changes on main` and `On top of 65a2d35 Release 0.18.0`.
+fn working_header(root: &Path) -> String {
+    let branch = output(git(root).args(["symbolic-ref", "--short", "-q", "HEAD"]))
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned());
+    let head = run(git(root).args(["log", "-1", "--no-show-signature", "--format=%h %s", "HEAD"]))
+        .map(|o| String::from_utf8_lossy(&o).trim().to_owned())
+        .unwrap_or_default();
+    let on = match branch {
+        Some(branch) => format!("Uncommitted changes on {branch}"),
+        None => "Uncommitted changes, HEAD detached".to_owned(),
+    };
+    format!("{on}\nOn top of {head}")
+}
+
+/// The uncommitted files whose changes add or remove a line containing
+/// `pattern`, matched as `code_search` matches commits: literal, smart case.
+/// With `paths`, only those files. Every line of an untracked file is added.
+pub fn working_code_search(
+    root: &Path,
+    pattern: &str,
+    paths: Option<&[String]>,
+) -> Result<Vec<String>> {
+    let ignore_case = !pattern.chars().any(char::is_uppercase);
+    let mut cmd = git_reading(root);
+    cmd.args([
+        "diff-index",
+        "--name-only",
+        "-z",
+        "-G",
+        &literal_regex(pattern),
+    ]);
+    if ignore_case {
+        cmd.arg("--regexp-ignore-case");
+    }
+    cmd.arg("HEAD");
+    if let Some(paths) = paths {
+        cmd.arg("--").args(paths);
+    }
+    let out = run(&mut cmd)?;
+    let mut found: Vec<String> = String::from_utf8_lossy(&out)
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let needle = if ignore_case {
+        pattern.to_lowercase()
+    } else {
+        pattern.to_owned()
+    };
+    for path in untracked(root)? {
+        if paths.is_some_and(|paths| !paths.contains(&path)) {
+            continue;
+        }
+        let full = root.join(&path);
+        if fs::metadata(&full).map_or(true, |m| m.len() > MAX_SEARCHED) {
+            continue;
+        }
+        let Ok(bytes) = fs::read(&full) else {
+            continue;
+        };
+        // Binary files, which git doesn't search either.
+        if bytes.contains(&0) {
+            continue;
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        let hit = text.lines().any(|line| {
+            if ignore_case {
+                line.to_lowercase().contains(&needle)
+            } else {
+                line.contains(&needle)
+            }
+        });
+        if hit {
+            found.push(path);
+        }
+    }
+    Ok(found)
+}
+
 /// What `git show` prints for one file of a commit: the header and message, a
 /// NUL, then the file's unified diff (merges: against the first parent). With no
 /// file, just the message.
 pub fn diff(root: &Path, sha: &str, file: Option<&FileChange>) -> Result<String> {
+    if is_working(sha) {
+        return working_diff(root, file);
+    }
     let mut cmd = git(root);
     cmd.args([
         "show",
@@ -1138,5 +1410,165 @@ mod tests {
             .unwrap()
             .collect();
         assert!(neither.is_empty());
+    }
+
+    fn working_files(repo: &Repo) -> Vec<FileChange> {
+        working(repo.path()).unwrap().files
+    }
+
+    #[test]
+    fn working_lists_staged_unstaged_and_untracked_against_head() {
+        let repo = Repo::new();
+        repo.write("edit.txt", "1\n");
+        repo.write("gone.txt", "x\n");
+        repo.write("same.txt", "s\n");
+        repo.commit("one");
+        assert!(
+            working_files(&repo).is_empty(),
+            "a clean tree has no changes"
+        );
+
+        repo.write("edit.txt", "2\n");
+        repo.write("staged.txt", "new\n");
+        repo.git(&["add", "staged.txt"]);
+        fs::remove_file(repo.path().join("gone.txt")).unwrap();
+        repo.write("dir/loose.txt", "?\n");
+        assert_eq!(
+            working_files(&repo),
+            vec![
+                change(Status::Modified, "edit.txt"),
+                change(Status::Deleted, "gone.txt"),
+                change(Status::Added, "staged.txt"),
+                change(Status::Untracked, "dir/loose.txt"),
+            ]
+        );
+    }
+
+    #[test]
+    fn working_pairs_a_staged_rename() {
+        let repo = Repo::new();
+        repo.write("old name.txt", "same\n");
+        repo.commit("one");
+        repo.git(&["mv", "old name.txt", "new name.txt"]);
+        assert_eq!(
+            working_files(&repo),
+            vec![FileChange {
+                status: Status::Renamed,
+                path: "new name.txt".into(),
+                old_path: Some("old name.txt".into()),
+            }]
+        );
+        let renamed = &working_files(&repo)[0];
+        let d = diff(repo.path(), "working:1", Some(renamed)).unwrap();
+        assert!(d.contains("rename from old name.txt"));
+    }
+
+    #[test]
+    fn working_fingerprint_follows_content_not_just_the_list() {
+        let repo = Repo::new();
+        repo.write("a.txt", "1\n");
+        repo.commit("one");
+        repo.write("a.txt", "2\n");
+        let before = working(repo.path()).unwrap();
+        assert_eq!(before, working(repo.path()).unwrap(), "nothing changed");
+        repo.write("a.txt", "33\n");
+        let after = working(repo.path()).unwrap();
+        assert_eq!(after.files, before.files);
+        assert_ne!(after.fingerprint, before.fingerprint);
+    }
+
+    #[test]
+    fn reading_the_working_tree_never_writes_the_index() {
+        let repo = Repo::new();
+        repo.write("a.txt", "1\n");
+        repo.commit("one");
+        // Touched after the index was written, so a refresh would rewrite it.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        repo.write("a.txt", "1\n");
+        repo.write("b.txt", "needle\n");
+        let index = repo.path().join(".git/index");
+        let stamp = || fs::metadata(&index).unwrap().modified().unwrap();
+        let (bytes, modified) = (fs::read(&index).unwrap(), stamp());
+        working(repo.path()).unwrap();
+        diff(
+            repo.path(),
+            "working:1",
+            Some(&change(Status::Modified, "a.txt")),
+        )
+        .unwrap();
+        working_code_search(repo.path(), "needle", None).unwrap();
+        assert_eq!(fs::read(&index).unwrap(), bytes);
+        assert_eq!(stamp(), modified);
+    }
+
+    #[test]
+    fn working_diff_has_a_header_then_the_change() {
+        let repo = Repo::new();
+        repo.write("a.txt", "old\n");
+        repo.commit("first blood");
+        repo.write("a.txt", "new\n");
+        repo.write("b.txt", "fresh\n");
+
+        let d = diff(
+            repo.path(),
+            "working:1",
+            Some(&change(Status::Modified, "a.txt")),
+        )
+        .unwrap();
+        let (header, patch) = d.split_once('\0').unwrap();
+        assert!(header.starts_with("Uncommitted changes on main\nOn top of "));
+        assert!(header.ends_with(" first blood"));
+        assert!(patch.contains("-old\n+new"));
+
+        let d = diff(
+            repo.path(),
+            "working:1",
+            Some(&change(Status::Untracked, "b.txt")),
+        )
+        .unwrap();
+        assert!(d.contains("new file mode"));
+        assert!(d.contains("+fresh"));
+
+        let lines = parse_diff(&diff(repo.path(), "working:1", None).unwrap());
+        assert!(lines.iter().all(|l| l.kind == LineKind::Meta));
+    }
+
+    #[test]
+    fn working_code_search_finds_tracked_and_untracked_lines() {
+        let repo = Repo::new();
+        repo.write("a.rs", "keep\n");
+        repo.write("c.rs", "Needle\n");
+        repo.commit("one");
+        repo.write("a.rs", "keep\nlet NeeDle = 1;\n");
+        repo.write("b.rs", "a NEEDLE here\n");
+        repo.write("d.rs", "no\n");
+        let search = |pattern, paths: Option<&[String]>| {
+            let mut found = working_code_search(repo.path(), pattern, paths).unwrap();
+            found.sort();
+            found
+        };
+        // c.rs has it, but unchanged.
+        assert_eq!(search("needle", None), vec!["a.rs", "b.rs"]);
+        assert_eq!(
+            search("NEEDLE", None),
+            vec!["b.rs"],
+            "a capital makes it exact"
+        );
+        assert_eq!(search("needle", Some(&["b.rs".into()])), vec!["b.rs"]);
+        assert!(search("let needle =", Some(&["d.rs".into()])).is_empty());
+        assert_eq!(search("let needle =", None), vec!["a.rs"]);
+    }
+
+    #[test]
+    fn working_shows_only_on_ground_ending_at_head() {
+        let repo = Repo::new();
+        repo.commit("one");
+        repo.commit("two");
+        repo.git(&["branch", "other", "HEAD~1"]);
+        assert!(shows_working(repo.path(), None));
+        assert!(shows_working(repo.path(), Some("HEAD~1..HEAD")));
+        assert!(shows_working(repo.path(), Some("main")));
+        assert!(!shows_working(repo.path(), Some("other")));
+        assert!(!shows_working(repo.path(), Some("main..other")));
     }
 }

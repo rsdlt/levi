@@ -7,6 +7,15 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+### Added
+
+- Uncommitted changes show as a red row on top of the log, `working uncommitted changes`:
+  staged, unstaged and untracked files against HEAD, with the same search, diffs and keys as
+  a commit. It follows the working tree as an agent edits it, keeping your place in the diff,
+  and goes once everything is committed. `/c` searches it too. Enter and `C-y` say it has no
+  sha; with `--pick-context`, Enter names it and the lines in view. levi still never writes
+  to your repository: reading the working tree doesn't touch the index.
+
 ## [0.18.0] - 2026-10-19
 
 ### Added

@@ -48,6 +48,8 @@ Shows the current branch, or the commits of any revision git understands:
 
 levi follows the repository: new commits show up on top within two seconds, and
 a rewrite (amend, rebase) reloads the list, keeping your search and selection.
+Uncommitted changes sit above them, in red, as `working`, untracked files
+included, until they're committed.
 
 Type to filter commits by subject, author, sha prefix or touched files.
 fzf syntax: 'exact  ^prefix  suffix$  !negate  (space-separated terms all match)
@@ -241,9 +243,10 @@ fn run(terminal: &mut Tui, app: &mut App, root: PathBuf) -> Result<()> {
     }
     let (tx, rx) = mpsc::channel();
     let input = worker::spawn_input(tx.clone());
+    let working = git::shows_working(&root, app.rev.as_deref());
     let rev = app.rev.clone().unwrap_or_else(|| "HEAD".into());
     let logs = worker::LogLoader::new(root.clone(), rev.clone(), tx.clone());
-    let watcher = worker::Watcher::spawn(root.clone(), rev, tx.clone());
+    let watcher = worker::Watcher::spawn(root.clone(), rev, working, tx.clone());
     let code = worker::CodeSearcher::new(root.clone(), tx.clone());
     let diffs = worker::spawn_diff(root.clone(), tx);
 
@@ -263,6 +266,9 @@ fn run(terminal: &mut Tui, app: &mut App, root: PathBuf) -> Result<()> {
         }
         if let Some(req) = app.take_code_request(Instant::now()) {
             code.start(req);
+        }
+        if let Some(req) = app.take_working_code_request() {
+            code.search_working(req);
         }
         if let Some(req) = app.take_diff_request() {
             diffs.send(req)?;
@@ -306,6 +312,25 @@ fn run(terminal: &mut Tui, app: &mut App, root: PathBuf) -> Result<()> {
 fn open(terminal: &mut Tui, input: &worker::Input, root: &Path, req: &app::OpenRequest) -> String {
     let line = req.line;
     let live = root.join(&req.path);
+    // An uncommitted deletion: the file as HEAD has it.
+    let head;
+    let req = if git::is_working(&req.sha) && !live.is_file() {
+        let Some(sha) = git::tips(root, "HEAD")
+            .ok()
+            .and_then(|t| t.into_iter().next())
+        else {
+            return format!("{} isn't in the working tree", req.path);
+        };
+        head = app::OpenRequest {
+            short: sha[..7].to_owned(),
+            sha,
+            deleted: false,
+            ..req.clone()
+        };
+        &head
+    } else {
+        req
+    };
     let (file, past) = if live.is_file() {
         (live, None)
     } else {

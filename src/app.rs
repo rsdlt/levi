@@ -12,7 +12,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::text::Span;
 
 use crate::filter::{self, Filter, Hit};
-use crate::git::{Commit, DiffLine, FileChange, LineKind, Status};
+use crate::git::{self, Commit, DiffLine, FileChange, LineKind, Status};
 use crate::layout::{Resize, Seam, Splits};
 use crate::query::{self, Source, find_code};
 
@@ -26,6 +26,8 @@ const JUMP_CONTEXT: usize = 3;
 const WHEEL_LINES: isize = 3;
 /// Columns one sideways scroll of the diff moves, by key or wheel.
 const SIDE_STEP: isize = 8;
+/// What Enter and Ctrl-Y say on the row of uncommitted changes.
+const NO_SHA: &str = "uncommitted changes have no sha";
 /// Two presses on a seam within this long put its layout back to the defaults.
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
@@ -48,6 +50,8 @@ pub enum Msg {
     Moved(Source, Change),
     /// The commits a refresh found on top, from the load with this generation.
     Newer(u64, Result<Vec<Commit>, String>),
+    /// The uncommitted changes, at first and whenever they change.
+    Working(Vec<FileChange>),
 }
 
 /// How what levi shows changed since the watcher last looked.
@@ -64,6 +68,14 @@ pub enum Change {
 pub struct CodeRequest {
     pub pattern: String,
     pub targets: Vec<CodeTarget>,
+    pub generation: u64,
+}
+
+/// Search the uncommitted changes for `pattern`, for the `/c` search with
+/// this generation.
+pub struct WorkingCodeRequest {
+    pub pattern: String,
+    pub target: CodeTarget,
     pub generation: u64,
 }
 
@@ -93,6 +105,9 @@ pub struct CodeSearch {
     /// Search only these commits next time, the ones a refresh added; the
     /// rest were searched already.
     only: Option<HashSet<String>>,
+    /// The uncommitted changes need searching: the search started, or they
+    /// changed since.
+    working_due: bool,
 }
 
 impl CodeSearch {
@@ -331,6 +346,14 @@ pub struct App {
     reselect: Option<Reselect>,
     /// The watcher should look now (see `take_check`).
     check: bool,
+    /// The uncommitted changes as last reported; `None` until the first
+    /// report. Shown as a row on top of the log while there are any.
+    working: Option<Vec<FileChange>>,
+    /// Counts the reports, to tell the row's states apart (see `git::WORKING`).
+    working_version: u64,
+    /// The row's sha before its last change, whose diff stays shown while the
+    /// new one loads.
+    working_before: Option<String>,
 }
 
 /// The selected commit, file and diff scroll, kept across a reload.
@@ -392,6 +415,9 @@ impl App {
             refreshing: false,
             reselect: None,
             check: false,
+            working: None,
+            working_version: 0,
+            working_before: None,
         }
     }
 
@@ -445,6 +471,10 @@ impl App {
                 }
             }
             Msg::Diff(key, result) => self.diffs.insert(key, result),
+            Msg::Working(files) => {
+                self.settle();
+                self.set_working(files);
+            }
             Msg::CodeHits(generation, hits) => {
                 self.settle();
                 self.add_code_hits(generation, hits);
@@ -533,6 +563,13 @@ impl App {
         self.by_sha.clear();
         self.loading = true;
         self.log_error = None;
+        if source == Source::Log
+            && let Some(row) = self.working_row()
+        {
+            self.by_sha.insert(row.sha.clone(), vec![0]);
+            self.commits.push(row);
+            self.admit_row();
+        }
     }
 
     /// Drops the current code search and prepares `pattern`, if any. It's handed
@@ -552,6 +589,7 @@ impl App {
                 scope: None,
                 typed_at: Instant::now(),
                 only: None,
+                working_due: false,
             }
         });
     }
@@ -573,11 +611,17 @@ impl App {
             return None;
         }
         let fuzzy = self.filter.query().to_owned();
+        // The uncommitted changes go on their own (see `take_working_code_request`).
+        let front = self
+            .commits
+            .first()
+            .is_some_and(|c| git::is_working(&c.sha));
+        code.working_due = front;
         let all: Vec<usize> = match code.only.take() {
             Some(only) => (0..self.commits.len())
                 .filter(|&i| only.contains(&self.commits[i].sha))
                 .collect(),
-            None => (0..self.commits.len()).collect(),
+            None => (front as usize..self.commits.len()).collect(),
         };
         let targets = code_targets(
             &self.commits,
@@ -587,6 +631,29 @@ impl App {
         Some(CodeRequest {
             pattern: code.pattern.clone(),
             targets,
+            generation: code.generation,
+        })
+    }
+
+    /// The search of the uncommitted changes, once a code search started and
+    /// whenever they change during it, over the files its fuzzy part matched.
+    pub fn take_working_code_request(&mut self) -> Option<WorkingCodeRequest> {
+        let code = self.code.as_mut().filter(|c| c.working_due)?;
+        code.working_due = false;
+        let scope = code.scope.as_deref()?;
+        let row = self.commits.first().filter(|c| git::is_working(&c.sha))?;
+        let hits = filter::par_matches(scope, &self.commits[..1], &[0]);
+        let target = code_targets(&self.commits[..1], hits).pop();
+        let Some(target) = target else {
+            // The fuzzy part doesn't match it, so it's not shown either way.
+            let none = (row.sha.clone(), Vec::new());
+            let generation = code.generation;
+            self.add_code_hits(generation, vec![none]);
+            return None;
+        };
+        Some(WorkingCodeRequest {
+            pattern: code.pattern.clone(),
+            target,
             generation: code.generation,
         })
     }
@@ -606,6 +673,19 @@ impl App {
         };
         let selected = self.view.get(self.commit_idx).map(|h| h.commit);
         for (sha, paths) in hits {
+            // The uncommitted changes' latest result replaces the one before,
+            // unless they changed again since.
+            if git::is_working(&sha) {
+                if self.commits.first().is_none_or(|c| c.sha != sha) {
+                    continue;
+                }
+                code.hits.insert(sha, paths);
+                self.view.retain(|h| h.commit != 0);
+                if let Some(hit) = self.filter.matches(0, &self.commits[0]) {
+                    self.view.extend(code.admit(&self.commits, hit));
+                }
+                continue;
+            }
             let positions = self.by_sha.get(&sha).cloned().unwrap_or_default();
             // A search that started over after a refresh finds some again.
             if code.hits.insert(sha, paths).is_some() {
@@ -772,7 +852,11 @@ impl App {
             .reflog
             .as_ref()
             .map_or(&commit.subject, |r| &r.action);
-        let mut out = format!("commit {} (\"{text}\")", commit.short);
+        let mut out = if git::is_working(&commit.sha) {
+            "the uncommitted changes".to_owned()
+        } else {
+            format!("commit {} (\"{text}\")", commit.short)
+        };
         let Some(file) = self.file() else {
             return Some(out);
         };
@@ -912,18 +996,20 @@ impl App {
         if n == 0 {
             return;
         }
-        let selected = self.hit().map(|h| h.commit + n);
-        let old = mem::replace(&mut self.commits, fresh);
-        self.commits.extend(old);
-        for positions in self.by_sha.values_mut() {
-            for i in positions {
-                *i += n;
+        // Below the row of uncommitted changes, if there is one.
+        let at = self.front();
+        let selected = self.hit().map(|h| {
+            if h.commit >= at {
+                h.commit + n
+            } else {
+                h.commit
             }
-        }
-        for hit in &mut self.view {
-            hit.commit += n;
-        }
-        for i in 0..n {
+        });
+        let rest = self.commits.split_off(at);
+        self.commits.extend(fresh);
+        self.commits.extend(rest);
+        self.shift(at, n as isize);
+        for i in at..at + n {
             self.by_sha
                 .entry(self.commits[i].sha.clone())
                 .or_default()
@@ -949,7 +1035,12 @@ impl App {
             // A finished search only needs the new commits; one still running
             // starts over on its whole scope, keeping what it found.
             if code.finished {
-                code.only = Some(self.commits[..n].iter().map(|c| c.sha.clone()).collect());
+                code.only = Some(
+                    self.commits[at..at + n]
+                        .iter()
+                        .map(|c| c.sha.clone())
+                        .collect(),
+                );
             }
             code.scope = None;
             code.finished = false;
@@ -960,6 +1051,126 @@ impl App {
         }
         let plural = if n == 1 { "" } else { "s" };
         self.notice = Some(format!("{n} new commit{plural}"));
+    }
+
+    /// Whether the first commit is the row of uncommitted changes.
+    pub fn has_working_row(&self) -> bool {
+        self.commits
+            .first()
+            .is_some_and(|c| git::is_working(&c.sha))
+    }
+
+    /// Where the commits proper start: after the row of uncommitted changes.
+    fn front(&self) -> usize {
+        self.has_working_row() as usize
+    }
+
+    /// Whether the row of uncommitted changes is selected.
+    pub fn on_working_row(&self) -> bool {
+        self.commit().is_some_and(|c| git::is_working(&c.sha))
+    }
+
+    /// The row of uncommitted changes, as a commit the lists can hold, while
+    /// there are any.
+    fn working_row(&self) -> Option<Commit> {
+        let files = self.working.as_ref().filter(|f| !f.is_empty())?;
+        Some(Commit {
+            sha: format!("{}{}", git::WORKING, self.working_version),
+            short: "working".into(),
+            author: String::new(),
+            date: String::new(),
+            subject: "uncommitted changes".into(),
+            reflog: None,
+            files: files.clone(),
+        })
+    }
+
+    /// Shows the row of uncommitted changes, at index 0, if the query lets it.
+    fn admit_row(&mut self) {
+        if let Some(hit) = self.filter.matches(0, &self.commits[0]) {
+            match &self.code {
+                Some(code) => self.view.extend(code.admit(&self.commits, hit)),
+                None => self.view.push(hit),
+            }
+        }
+    }
+
+    /// Moves the commits from index `from` on by `delta` places, in every
+    /// index that points at them, for an insertion or removal there.
+    fn shift(&mut self, from: usize, delta: isize) {
+        let moved = |i: &mut usize| {
+            if *i >= from {
+                *i = i.saturating_add_signed(delta);
+            }
+        };
+        self.by_sha.values_mut().flatten().for_each(moved);
+        self.view.iter_mut().for_each(|h| moved(&mut h.commit));
+    }
+
+    /// Follows the uncommitted changes the watcher reported: the row on top
+    /// appears, changes or goes. A changed row keeps its selection, file and
+    /// scroll, so an agent's edits can be watched as they land; the first
+    /// report selects it, if nothing else was.
+    fn set_working(&mut self, files: Vec<FileChange>) {
+        let first = self.working.is_none();
+        let listed = self.working.as_ref() != Some(&files);
+        self.working = Some(files);
+        self.working_version += 1;
+        if self.source != Source::Log {
+            return;
+        }
+        let had = self.has_working_row();
+        let selected = self.hit().map(|h| h.commit);
+        let on_row = had && selected == Some(0);
+        let mut before = None;
+        if had {
+            let old = self.commits.remove(0);
+            self.by_sha.remove(&old.sha);
+            self.view.retain(|h| h.commit != 0);
+            self.shift(1, -1);
+            let paths = self.code.as_mut().and_then(|c| c.hits.remove(&old.sha));
+            before = Some((old.sha, paths));
+        }
+        if let Some(row) = self.working_row() {
+            self.shift(0, 1);
+            self.by_sha.insert(row.sha.clone(), vec![0]);
+            if let Some(code) = &mut self.code {
+                // What the search last found stays until it's searched again.
+                if let Some((_, Some(paths))) = &before {
+                    code.hits.insert(row.sha.clone(), paths.clone());
+                }
+                code.working_due |= code.scope.is_some();
+            }
+            if let Some(jumped) = &mut self.jumped
+                && before.as_ref().is_some_and(|(sha, _)| *sha == jumped.0)
+            {
+                jumped.0 = row.sha.clone();
+            }
+            self.commits.insert(0, row);
+            self.admit_row();
+        }
+        self.working_before = before.map(|(sha, _)| sha);
+        let has = self.has_working_row();
+        let target = match selected {
+            _ if first && has && self.commit_idx == 0 => Some(0),
+            Some(0) if had => has.then_some(0),
+            Some(i) => Some(i - had as usize + has as usize),
+            None => None,
+        };
+        self.resort(target);
+        if self.selection.is_some_and(|s| s.pane == Focus::Commits) {
+            self.selection = None;
+        }
+        // Another commit is selected now: the row, at first, or the top one,
+        // once the row is gone.
+        if (target == Some(0) && has) != on_row {
+            self.commit_idx = self.commit_idx.min(self.view.len().saturating_sub(1));
+            self.file_idx = 0;
+            self.reset_diff_scroll();
+        }
+        if !first && has && listed {
+            self.notice = Some("working tree changed".into());
+        }
     }
 
     /// The diff the selection needs, if it isn't cached and wasn't already asked for.
@@ -1011,7 +1222,15 @@ impl App {
         let Some(commit) = self.commit() else {
             return DiffView::Empty;
         };
-        match self.diffs.get(&diff_key(&commit.sha, self.file())) {
+        let file = self.file();
+        let cached = self.diffs.get(&diff_key(&commit.sha, file)).or_else(|| {
+            // The uncommitted changes changed: the last diff stays until the new one is in.
+            let before = self.working_before.as_ref()?;
+            git::is_working(&commit.sha)
+                .then(|| self.diffs.get(&diff_key(before, file)))
+                .flatten()
+        });
+        match cached {
             None => DiffView::Loading,
             Some(Ok(lines)) => DiffView::Ready(lines),
             Some(Err(err)) => DiffView::Failed(err),
@@ -1039,6 +1258,9 @@ impl App {
             KeyCode::Left if shift => self.scroll_diff_sideways(-SIDE_STEP),
             KeyCode::Tab | KeyCode::Right => self.focus = self.focus.next(),
             KeyCode::BackTab | KeyCode::Left => self.focus = self.focus.prev(),
+            KeyCode::Char('y') if ctrl && self.on_working_row() => {
+                self.notice = Some(NO_SHA.into())
+            }
             KeyCode::Char('y') if ctrl => {
                 if let Some(commit) = self.commit() {
                     let notice = format!("copied {}", commit.short);
@@ -1063,6 +1285,9 @@ impl App {
                 }
                 _ => self.notice = Some("no file to open".into()),
             },
+            KeyCode::Enter if !self.pick_context && self.on_working_row() => {
+                self.notice = Some(NO_SHA.into());
+            }
             KeyCode::Enter => {
                 let picked = if self.pick_context {
                     self.context()

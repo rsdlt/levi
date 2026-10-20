@@ -71,6 +71,10 @@ levi v1.0..        # everything since a tag
 He keeps watch while you work. Commit, pull or rebase in another terminal, or let your agent
 do it, and levi catches up within two seconds, without losing your place.
 
+What isn't committed yet sits on top, in red: `working uncommitted changes`, staged, unstaged
+and untracked files together. Watch an agent's edits land in the diff as it writes them, or
+search them with `/c` before they're ever committed.
+
 `Enter` prints the selected commit's sha and quits, so levi works as a picker:
 `git show $(levi)`.
 

@@ -13,7 +13,9 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, MouseButton, MouseEventKind};
 
-use crate::app::{Change, CodeRequest, CodeTarget, DiffRequest, LogRequest, Msg};
+use crate::app::{
+    Change, CodeRequest, CodeTarget, DiffRequest, LogRequest, Msg, WorkingCodeRequest,
+};
 use crate::git::{self, Commit};
 use crate::query::Source;
 use crate::syntax;
@@ -172,7 +174,9 @@ enum Tip {
 
 /// Notices when what levi shows changes under it: a commit, a pull, an amend,
 /// a rebase, a new reflog entry. It asks git every `WATCH_INTERVAL`, or at
-/// once when poked, and reports a change as `Msg::Moved`.
+/// once when poked, and reports a change as `Msg::Moved`. With `working`, it
+/// also reports the uncommitted changes as `Msg::Working`, at once and then
+/// whenever they change.
 pub struct Watcher {
     root: PathBuf,
     /// What the log shows: `HEAD`, or the revision levi was started with.
@@ -183,7 +187,7 @@ pub struct Watcher {
 }
 
 impl Watcher {
-    pub fn spawn(root: PathBuf, rev: String, tx: Sender<Msg>) -> Watcher {
+    pub fn spawn(root: PathBuf, rev: String, working: bool, tx: Sender<Msg>) -> Watcher {
         let seen = Arc::new(Mutex::new(None::<(Source, Tip)>));
         let (poke, poked) = mpsc::channel();
         let watcher = Watcher {
@@ -193,8 +197,26 @@ impl Watcher {
             poke,
         };
         thread::spawn(move || {
+            let mut fingerprint = None;
+            let mut working_changed = |tx: &Sender<Msg>| {
+                // git failing, say for a moment mid-rebase, keeps what's shown.
+                let Some(now) = working.then(|| git::working(&root).ok()).flatten() else {
+                    return true;
+                };
+                if fingerprint == Some(now.fingerprint) {
+                    return true;
+                }
+                fingerprint = Some(now.fingerprint);
+                tx.send(Msg::Working(now.files)).is_ok()
+            };
+            if !working_changed(&tx) {
+                return;
+            }
             loop {
                 if let Err(RecvTimeoutError::Disconnected) = poked.recv_timeout(WATCH_INTERVAL) {
+                    return;
+                }
+                if !working_changed(&tx) {
                     return;
                 }
                 let Some((source, old)) = seen.lock().expect("watch lock").clone() else {
@@ -516,6 +538,21 @@ impl CodeSearcher {
     }
 }
 
+impl CodeSearcher {
+    /// Searches the uncommitted changes, alongside whatever search is running:
+    /// they change while a long one runs, and starting that over each time
+    /// would never let it finish. Always reports, with no paths for no match,
+    /// so an older state's hit doesn't linger.
+    pub fn search_working(&self, req: WorkingCodeRequest) {
+        let (root, tx) = (self.root.clone(), self.tx.clone());
+        thread::spawn(move || {
+            let paths = git::working_code_search(&root, &req.pattern, req.target.paths.as_deref())
+                .unwrap_or_default();
+            let _ = tx.send(Msg::CodeHits(req.generation, vec![(req.target.sha, paths)]));
+        });
+    }
+}
+
 /// Commits for one `git log -G`, and the files to diff (`None`: all of them).
 #[derive(Debug, PartialEq, Eq)]
 pub struct CodeChunk {
@@ -684,7 +721,7 @@ mod tests {
         let repo = Repo::new();
         repo.commit("one");
         let (tx, rx) = mpsc::channel();
-        let watcher = Watcher::spawn(repo.path().to_path_buf(), "HEAD".into(), tx);
+        let watcher = Watcher::spawn(repo.path().to_path_buf(), "HEAD".into(), false, tx);
         watcher.watch(Source::Log);
 
         repo.commit("two");
@@ -727,7 +764,7 @@ mod tests {
         repo.git(&["branch", "base"]);
         repo.commit("on top");
         let (tx, rx) = mpsc::channel();
-        let watcher = Watcher::spawn(repo.path().to_path_buf(), "base..HEAD".into(), tx);
+        let watcher = Watcher::spawn(repo.path().to_path_buf(), "base..HEAD".into(), false, tx);
         watcher.watch(Source::Log);
 
         repo.commit("more");
@@ -743,6 +780,45 @@ mod tests {
         repo.git(&["branch", "-f", "base", "HEAD~1"]);
         watcher.poke();
         assert_eq!(next_move(&rx), (Source::Log, Change::Rewritten));
+    }
+
+    fn next_working(rx: &mpsc::Receiver<Msg>, wait: Duration) -> Option<Vec<git::FileChange>> {
+        loop {
+            match rx.recv_timeout(wait) {
+                Ok(Msg::Working(files)) => return Some(files),
+                Ok(_) => continue,
+                Err(_) => return None,
+            }
+        }
+    }
+
+    #[test]
+    fn the_watcher_reports_uncommitted_changes_when_they_change() {
+        let repo = Repo::new();
+        repo.write("a.txt", "1\n");
+        repo.commit("one");
+        let (tx, rx) = mpsc::channel();
+        let watcher = Watcher::spawn(repo.path().to_path_buf(), "HEAD".into(), true, tx);
+        let wait = Duration::from_secs(5);
+        assert_eq!(
+            next_working(&rx, wait),
+            Some(vec![]),
+            "at once, even when clean"
+        );
+
+        repo.write("a.txt", "2\n");
+        watcher.poke();
+        let files = next_working(&rx, wait).expect("the edit");
+        assert_eq!(files.len(), 1);
+
+        watcher.poke();
+        let quiet = Duration::from_millis(300);
+        assert_eq!(next_working(&rx, quiet), None, "nothing changed");
+
+        // Same file list, new content.
+        repo.write("a.txt", "33\n");
+        watcher.poke();
+        assert_eq!(next_working(&rx, wait), Some(files));
     }
 
     /// An app with `repo`'s log loaded, as the loader would leave it.

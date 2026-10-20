@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 
 use crate::app::{App, DiffView, Focus, columns};
-use crate::git::{DiffLine, LineKind, Status};
+use crate::git::{self, DiffLine, LineKind, Status};
 use crate::query::{Source, find_code};
 use crate::tint::Tints;
 
@@ -119,10 +119,14 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
         let x = area.x + 1 + line.width() as u16;
         frame.set_cursor_position((x.min(area.right() - 2), area.y + 1));
     }
+    // The row of uncommitted changes isn't a commit, so it isn't counted.
+    let row = app.has_working_row();
+    let total = app.commits.len() - row as usize;
     let count = if app.filter.is_empty() && app.code.is_none() {
-        app.commits.len().to_string()
+        total.to_string()
     } else {
-        format!("{}/{}", app.view.len(), app.commits.len())
+        let shown = app.view.len() - app.view.iter().any(|h| row && h.commit == 0) as usize;
+        format!("{shown}/{total}")
     };
     let noun = match (app.source, &app.rev) {
         (Source::Log, Some(rev)) => &format!("commits in {rev}"),
@@ -134,6 +138,12 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
         None if app.loading => Line::from(format!(" {count} {noun}… ")),
         None => Line::from(format!(" {count} {noun} ")),
     };
+    if row {
+        status.push_span(Span::raw(format!(
+            "· {} changed ",
+            app.commits[0].files.len()
+        )));
+    }
     match &app.code {
         Some(code) if code.error.is_some() => status.push_span(Span::styled(
             format!(
@@ -236,10 +246,16 @@ fn draw_commits(frame: &mut Frame, app: &mut App, area: Rect) {
         .take(height)
         .map(|(i, hit)| {
             let c = &commits[hit.commit];
-            let sha_style = if hit.score == u32::MAX {
-                matched(Style::new().fg(Color::Yellow))
+            // Uncommitted changes in red, as `git status` shows them.
+            let (sha_color, text_style) = if git::is_working(&c.sha) {
+                (Color::Red, Style::new().fg(Color::Red))
             } else {
-                Style::new().fg(Color::Yellow)
+                (Color::Yellow, Style::new())
+            };
+            let sha_style = if hit.score == u32::MAX {
+                matched(Style::new().fg(sha_color))
+            } else {
+                Style::new().fg(sha_color)
             };
             let mut spans = vec![Span::styled(c.short.as_str(), sha_style), Span::raw(" ")];
             // In the reflog, what happened says more than the commit's subject.
@@ -247,7 +263,7 @@ fn draw_commits(frame: &mut Frame, app: &mut App, area: Rect) {
             spans.extend(highlighted(
                 text,
                 &filter.highlights(text, false),
-                Style::new(),
+                text_style,
             ));
             mark(ListItem::new(Line::from(spans)), &marked, i)
         })
@@ -2211,5 +2227,263 @@ mod tests {
                 .iter()
                 .all(|h| app.commits[h.commit].subject != "rename only")
         );
+    }
+
+    /// Plays the watcher's part: reports the uncommitted changes as they are now.
+    fn report_working(app: &mut App, repo: &Repo) {
+        let files = git::working(repo.path()).unwrap().files;
+        app.update(Msg::Working(files));
+    }
+
+    fn ctrl(app: &mut App, c: char) {
+        let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        app.update(Msg::Input(Event::Key(key)));
+    }
+
+    /// Two commits, then an edit to one file and a new one, uncommitted.
+    fn dirty() -> Repo {
+        let repo = Repo::new();
+        repo.write("a.rs", "fn one() {}\n");
+        repo.commit("first");
+        repo.write("b.rs", "fn two() {}\n");
+        repo.commit("second");
+        repo.write("a.rs", "fn one() { attack(); }\n");
+        repo.write("new.rs", "fn three() {}\n");
+        repo
+    }
+
+    #[test]
+    fn uncommitted_changes_sit_on_top_in_red() {
+        let repo = dirty();
+        let mut app = loaded(&repo);
+        report_working(&mut app, &repo);
+        serve_diffs(&mut app, &repo);
+        let screen = render(&mut app);
+        println!("{screen}");
+        assert!(screen.contains("working uncommitted changes"));
+        assert!(
+            screen.contains(" 2 commits · 2 changed "),
+            "the row isn't counted"
+        );
+        assert!(screen.contains("M a.rs"));
+        assert!(screen.contains("? new.rs"));
+        assert!(screen.contains("Uncommitted changes on main"));
+        assert!(screen.contains("+fn one() { attack(); }"));
+        assert!(app.on_working_row(), "the first report selects it");
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let color_of = |text: &str| {
+            (0..buf.area.height)
+                .find_map(|y| {
+                    let row: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+                    let x = row.find(text)?;
+                    // Columns, for the box-drawing borders before it.
+                    let x = row[..x].chars().count() as u16;
+                    Some(buf[(x, y)].fg)
+                })
+                .unwrap()
+        };
+        assert_eq!(color_of("working"), Color::Red);
+        assert_eq!(color_of("uncommitted changes"), Color::Red);
+        assert_ne!(color_of("second"), Color::Red);
+        assert_ne!(color_of("a.rs"), Color::Red, "file names keep their color");
+
+        // A filter that leaves the row out counts only commits.
+        type_str(&mut app, "first");
+        assert!(render(&mut app).contains(" 1/2 commits · 2 changed "));
+    }
+
+    #[test]
+    fn a_clean_tree_has_no_row() {
+        let repo = titans();
+        let mut app = loaded(&repo);
+        report_working(&mut app, &repo);
+        let screen = render(&mut app);
+        assert!(!screen.contains("working"));
+        assert!(!screen.contains("changed"));
+        assert!(!app.has_working_row());
+    }
+
+    #[test]
+    fn a_late_first_report_keeps_a_moved_selection() {
+        let repo = dirty();
+        let mut app = loaded(&repo);
+        press(&mut app, KeyCode::Down);
+        report_working(&mut app, &repo);
+        assert_eq!(app.commit().unwrap().subject, "first");
+    }
+
+    #[test]
+    fn the_row_follows_the_working_tree() {
+        let repo = dirty();
+        let mut app = loaded(&repo);
+        report_working(&mut app, &repo);
+        serve_diffs(&mut app, &repo);
+        press(&mut app, KeyCode::Tab);
+        app.diff_scroll = 2;
+
+        // An agent edits the file you're reading: the diff updates in place.
+        repo.write("a.rs", "fn one() { attack(); }\nfn more() {}\n");
+        report_working(&mut app, &repo);
+        assert!(app.on_working_row());
+        assert_eq!(app.diff_scroll, 2, "the scroll stays");
+        assert!(
+            matches!(app.diff(), DiffView::Ready(_)),
+            "the last diff shows while the new one loads"
+        );
+        assert_eq!(app.notice, None, "the same files: nothing to say");
+        serve_diffs(&mut app, &repo);
+        app.diff_scroll = 0;
+        assert!(render(&mut app).contains("+fn more() {}"));
+
+        // A new file says so.
+        repo.write("c.rs", "fn c() {}\n");
+        report_working(&mut app, &repo);
+        assert_eq!(app.notice.as_deref(), Some("working tree changed"));
+        assert_eq!(app.commits[0].files.len(), 3);
+
+        // All committed: the row goes, and the top commit is selected.
+        repo.commit("third");
+        report_working(&mut app, &repo);
+        assert!(!app.has_working_row());
+        assert_eq!(app.commit_idx, 0);
+        assert_eq!(app.commit().unwrap().subject, "second");
+        assert_eq!(app.file_idx, 0);
+    }
+
+    #[test]
+    fn new_commits_go_below_the_row() {
+        let repo = dirty();
+        let mut app = loaded(&repo);
+        report_working(&mut app, &repo);
+        press(&mut app, KeyCode::Down);
+        repo.git(&["add", "new.rs"]);
+        repo.git(&["commit", "-q", "-m", "third"]);
+        let head = repo.log()[0].clone();
+        app.update(Msg::Moved(
+            Source::Log,
+            crate::app::Change::Grew(vec![head.sha.clone()]),
+        ));
+        let req = app.take_log_request().expect("a refresh");
+        app.update(Msg::Newer(req.generation, Ok(vec![head])));
+        let subjects: Vec<&str> = app
+            .view
+            .iter()
+            .map(|h| app.commits[h.commit].subject.as_str())
+            .collect();
+        assert_eq!(
+            subjects,
+            ["uncommitted changes", "third", "second", "first"]
+        );
+        assert_eq!(
+            app.commit().unwrap().subject,
+            "second",
+            "the selection stays"
+        );
+    }
+
+    #[test]
+    fn the_row_has_no_sha_to_print_or_copy() {
+        let repo = dirty();
+        let mut app = loaded(&repo);
+        report_working(&mut app, &repo);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.exit.is_none(), "levi stays open");
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("uncommitted changes have no sha")
+        );
+        ctrl(&mut app, 'y');
+        assert_eq!(app.take_clipboard(), None);
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("uncommitted changes have no sha")
+        );
+
+        app.pick_context = true;
+        serve_diffs(&mut app, &repo);
+        render(&mut app);
+        press(&mut app, KeyCode::Enter);
+        match app.exit.take() {
+            Some(Exit::Pick(text)) => assert_eq!(text, "the uncommitted changes, a.rs line 1"),
+            _ => panic!("no pick"),
+        }
+    }
+
+    #[test]
+    fn ctrl_o_on_the_row_opens_the_working_file() {
+        let repo = dirty();
+        let mut app = loaded(&repo);
+        report_working(&mut app, &repo);
+        serve_diffs(&mut app, &repo);
+        ctrl(&mut app, 'o');
+        let req = app.take_open().expect("a file to open");
+        assert!(git::is_working(&req.sha));
+        assert_eq!((req.path.as_str(), req.line), ("a.rs", 1));
+    }
+
+    #[test]
+    fn the_reflog_has_no_row() {
+        let repo = dirty();
+        let mut app = loaded(&repo);
+        report_working(&mut app, &repo);
+        type_str(&mut app, "/r");
+        app.settle();
+        assert!(!app.has_working_row());
+        // The tree changes while the reflog is shown...
+        repo.write("d.rs", "d\n");
+        report_working(&mut app, &repo);
+        assert!(!app.has_working_row());
+        // ...and the row is back, current, with the log.
+        press(&mut app, KeyCode::Esc);
+        app.settle();
+        assert!(app.has_working_row());
+        assert_eq!(app.commits[0].files.len(), 3);
+        assert_eq!(app.view[0].commit, 0);
+    }
+
+    #[test]
+    fn slash_c_searches_the_uncommitted_changes_on_their_own() {
+        let repo = dirty();
+        let mut app = loaded(&repo);
+        report_working(&mut app, &repo);
+        type_str(&mut app, "/c attack");
+        let later = std::time::Instant::now() + crate::app::CODE_DEBOUNCE * 2;
+        let req = app.take_code_request(later).expect("a code search is due");
+        assert_eq!(req.targets.len(), 2, "only the commits");
+        assert!(req.targets.iter().all(|t| !git::is_working(&t.sha)));
+        app.update(Msg::CodeHits(
+            req.generation,
+            crate::worker::search_now(repo.path(), &req),
+        ));
+        app.update(Msg::CodeDone(req.generation, Ok(())));
+        assert!(
+            !app.has_working_row() || app.view.iter().all(|h| h.commit != 0),
+            "not searched yet"
+        );
+
+        let serve_working = |app: &mut App| {
+            let req = app
+                .take_working_code_request()
+                .expect("the working tree is due");
+            let paths =
+                git::working_code_search(repo.path(), &req.pattern, req.target.paths.as_deref())
+                    .unwrap();
+            app.update(Msg::CodeHits(req.generation, vec![(req.target.sha, paths)]));
+        };
+        serve_working(&mut app);
+        assert_eq!(app.view.len(), 1);
+        assert!(app.on_working_row());
+        assert_eq!(app.files().len(), 1, "only the file with the match");
+
+        // The match is edited away: searched again, and gone.
+        repo.write("a.rs", "fn one() {}\nfn calm() {}\n");
+        report_working(&mut app, &repo);
+        assert_eq!(app.view.len(), 1, "the last result stays meanwhile");
+        serve_working(&mut app);
+        assert!(app.view.is_empty());
+        assert!(app.take_working_code_request().is_none(), "searched once");
     }
 }
