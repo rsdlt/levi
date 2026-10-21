@@ -6,7 +6,7 @@
 
 # levi
 
-[![CI](https://github.com/rsdlt/levi/actions/workflows/ci.yml/badge.svg)](https://github.com/rsdlt/levi/actions/workflows/ci.yml)
+[![CI](https://github.com/rsdlt/levi/actions/workflows/ci.yml/badge.svg)](https://github.com/rsdlt/levi/actions/workflows/ci.yml) [![levi on The Terminal Index](https://cli.masoko.net/badge/levi.svg)](https://cli.masoko.net/tools/levi/)
 
 > *Tch. Your history is filthy. Let's look at it properly.*
 
