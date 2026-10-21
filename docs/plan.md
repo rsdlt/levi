@@ -275,6 +275,16 @@ All five steps are done.
   selection, on the new side (the old side for a deleted file), mapped from the hunk headers.
   Rows with no code (message, headers) add no lines. A key clears the selection after it's
   handled, so Enter still sees it.
+- `--focus` (alone, from anywhere in the repository) prints that same reference for the levi
+  open there, so "look at what I have open in levi" works with any agent that runs commands.
+  The TUI rewrites a note after each frame whose reference changed, and removes it on exit:
+  `$TMPDIR/levi-focus-<hash>`, the FNV-1a of the canonical root (std's hasher isn't stable
+  across builds; worktrees get a note each), mode 0600, written to a temp name and renamed so
+  a reader never sees half of it. Not under `.git/`: levi never writes to the repository. The
+  note's first line is the pid; a note whose process is gone (`kill(pid, 0)`, for a levi
+  killed or whose terminal closed, which skips the cleanup) counts as none. With two levis on
+  one repository the last one to change wins, which is the one being used. Exit 0 with the
+  reference on stdout, 1 with none open, 2 outside a repository.
 - Integration tests in `tests/cli.rs` run the real binary for every pre-TUI path.
 
 ## Refresh
@@ -411,20 +421,21 @@ next commit (killing its git), and late messages from old generations are droppe
 
 - `--all` branches.
 - Optional `delta` piping / syntax highlighting.
-- Sending what's on screen to a coding agent. Done for herdr users: `levi --pick-context` plus
-  the herdr plugin in `herdr/`, which types the pick into the agent's input (herdr can send
-  text to an agent pane, which no agent offers on its own). Kept for the record, the shapes
-  considered before:
-  - **`levi --focus` (agents pull).** Superseded by the herdr plugin. A running levi keeps a small note of what it shows: commit,
-    file, the lines in view and any drag selection, rewritten only when they change (e.g. under
-    `.git/`) and removed on exit. `levi --focus` prints it, so "look at what I have open in levi"
-    works with any agent that runs commands, in the session you already have. Same model as
-    `--filter`; the CLAUDE.md snippet grows by a line. With two levis on one repo, the last one
-    touched wins.
-  - **Copy a reference.** One key copies `<sha> <path>:<lines> ("<subject>")` instead of raw text,
-    for agents that can't run commands; they `git show` the rest. Small, but still a paste.
-  - **Launch the agent** like `C-o` launches the editor, with a prompt naming the commit, file and
-    lines. Starts a new session each time (losing the running one), needs a question typed into
-    levi and agent-specific command lines: the least levi-like. Pushing a message into an
-    already-running agent isn't possible: Claude Code has no public way for another program to
-    do it.
+- Sending what's on screen to a coding agent. Done three ways. Pushed: `levi --pick-context`
+  plus the herdr plugin in `herdr/` and the tmux plugin (`levi.tmux`, the TPM entry point, and
+  `tmux/`), which type the pick into the agent's input, unsent (herdr and tmux can send text
+  to a pane, which no agent offers on its own). Pulled: `levi --focus` (see CLI behaviour),
+  for any agent, in or out of a multiplexer.
+  - **tmux.** `prefix G` (tmux 3.8 binds `g` to its move table; `@levi-key` changes it) runs
+    `display-popup -E -d '#{pane_current_path}'`. tmux doesn't expand formats in the popup's
+    command, only in `-d`, so the script asks `tmux display-message -p '#{pane_id}'`, which
+    inside a popup answers the pane under it. Unlike herdr, tmux can't tell an agent's pane
+    from a shell, so it types into any pane; it's unsent either way.
+  - Kept for the record, the shapes considered before:
+    - **Copy a reference.** One key copies `<sha> <path>:<lines> ("<subject>")` instead of raw
+      text, for agents that can't run commands; they `git show` the rest. Small, but still a paste.
+    - **Launch the agent** like `C-o` launches the editor, with a prompt naming the commit, file and
+      lines. Starts a new session each time (losing the running one), needs a question typed into
+      levi and agent-specific command lines: the least levi-like. Pushing a message into an
+      already-running agent isn't possible: Claude Code has no public way for another program
+      to do it.

@@ -185,6 +185,20 @@ fn pick_context_is_a_browse_flag() {
 }
 
 #[test]
+fn focus_without_an_open_levi() {
+    let dir = repo_with_two_commits();
+    let out = levi(dir.path(), &["--focus"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).starts_with("levi: no levi is open in "));
+    assert!(out.stdout.is_empty());
+
+    let dir = TempDir::new().unwrap();
+    let out = levi(dir.path(), &["--focus"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(stderr(&out), "levi: not inside a git repository\n");
+}
+
+#[test]
 fn one_revision_at_most() {
     let dir = repo_with_two_commits();
     let out = levi(dir.path(), &["main", "src/"]);

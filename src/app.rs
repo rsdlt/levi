@@ -846,7 +846,7 @@ impl App {
     /// selected, its path and the lines in view (or under the drag selection),
     /// on one line, for a person or an agent to follow:
     /// `commit d3a93ab ("Stack the lists"), src/ui.rs lines 27-40`.
-    fn context(&self) -> Option<String> {
+    pub fn context(&self) -> Option<String> {
         let commit = self.commit()?;
         let text = commit
             .reflog

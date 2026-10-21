@@ -139,12 +139,25 @@ Brief your agent once, in `CLAUDE.md` or `AGENTS.md`:
 To find the commits that touched some code, run `levi --filter '<query>'`. The query is fuzzy
 over commit subject, author, sha and file paths; `/c <text>` keeps only commits whose diffs add
 or remove `<text>` (literal, smart case), and `/r` searches the reflog. It prints
-`<sha> <subject>`, best match first. Then read one with `git show <sha>`.
+`<sha> <subject>`, best match first. Then read one with `git show <sha>`. When I say "what I
+have open in levi", run `levi --focus`: it prints the commit, file and lines I'm looking at.
 ```
 
-Orders go the other way too. Found the culprit in levi? `C-y` copies its sha and a drag over
-the diff copies the code, ready to paste into the agent's chat with whatever you want done
-about it.
+Orders go the other way too. Keep levi open in another pane, and `levi --focus` tells the
+agent what's on your screen:
+
+```sh
+$ levi --focus
+commit d3a93ab ("Stack the lists above the diff on narrow terminals"), src/ui.rs lines 27-40
+```
+
+So "why is the layout stacking in what I have open in levi?" just works, in the session you
+already have, with any agent that runs commands. It's the lines in view, or the ones under a
+drag. levi keeps that note in your temp directory, never in the repository, and `--focus`
+exits 1 when no levi is open there.
+
+Or do it by hand: `C-y` copies the sha and a drag over the diff copies the code, ready to
+paste into the agent's chat.
 
 ### With herdr
 
@@ -171,6 +184,19 @@ In commit d3a93ab ("Stack the lists above the diff on narrow terminals"), src/ui
 ```
 
 Finish the question and send it. Levi did the scouting; the agent only has to listen.
+
+### With tmux
+
+Same orders in [tmux](https://github.com/tmux/tmux) 3.2 or newer. With
+[TPM](https://github.com/tmux-plugins/tpm), add to `tmux.conf` and press `prefix I`:
+
+```tmux
+set -g @plugin 'rsdlt/levi'
+```
+
+In your agent's pane, press `prefix G`. levi pops up over it, in the pane's directory; `Enter`
+types the reference into the pane, unsent. See [tmux/README.md](tmux/README.md) for another
+key, or for tmux without TPM.
 
 ## Joint operations
 

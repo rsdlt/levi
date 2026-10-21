@@ -2,6 +2,7 @@ mod app;
 mod clipboard;
 mod editor;
 mod filter;
+mod focus;
 mod git;
 mod layout;
 mod query;
@@ -40,6 +41,7 @@ levi — commits, their files and diffs, with fuzzy search. Small, swift, precis
 
 Usage: levi [revision]                     (run inside a git repository)
        levi --filter <query> [revision]   print what the query finds, no TUI
+       levi --focus                       print what an open levi shows
 
 Shows the current branch, or the commits of any revision git understands:
   levi main..HEAD     what your branch adds to main
@@ -89,6 +91,10 @@ and exits 1 when nothing matches:
 --pick-context makes Enter print a reference to what's on screen instead of the
 sha, for handing to a person or an agent:
   commit d3a93ab (\"Stack the lists above the diff\"), src/ui.rs lines 27-40
+
+--focus prints that same reference for the levi open in this repository right
+now, without touching it, so an agent can look at what you're looking at. Exits
+1 when no levi is open here.
 ";
 
 /// What the command line asks for.
@@ -98,6 +104,7 @@ enum Cli {
     /// The revision, and whether Enter prints a reference instead of the sha.
     Browse(Option<String>, bool),
     Filter(String, Option<String>),
+    Focus,
 }
 
 /// At most one revision, and `--filter <query>` anywhere around it.
@@ -106,6 +113,7 @@ fn parse_args(args: &[String]) -> Result<Cli, String> {
         [flag] if flag == "-h" || flag == "--help" => return Ok(Cli::Help),
         // levi has no verbose mode, so -v is free to mean version too.
         [flag] if flag == "-V" || flag == "-v" || flag == "--version" => return Ok(Cli::Version),
+        [flag] if flag == "--focus" => return Ok(Cli::Focus),
         _ => {}
     }
     let (mut rev, mut query, mut context) = (None, None, false);
@@ -144,6 +152,16 @@ fn main() -> ExitCode {
         Ok(Cli::Browse(rev, context)) => (rev, context),
         Ok(Cli::Filter(query, rev)) => {
             return match print_matches(query, rev) {
+                Ok(true) => ExitCode::SUCCESS,
+                Ok(false) => ExitCode::FAILURE,
+                Err(e) => {
+                    eprintln!("levi: {e:#}");
+                    ExitCode::from(2)
+                }
+            };
+        }
+        Ok(Cli::Focus) => {
+            return match print_focus() {
                 Ok(true) => ExitCode::SUCCESS,
                 Ok(false) => ExitCode::FAILURE,
                 Err(e) => {
@@ -217,6 +235,18 @@ fn print_matches(query: String, rev: Option<String>) -> Result<bool> {
     Ok(!app.view.is_empty())
 }
 
+/// `--focus`: prints what the levi open in this repository has on screen.
+/// Returns whether one is.
+fn print_focus() -> Result<bool> {
+    let root = git::preflight(&std::env::current_dir()?, None)?;
+    let found = focus::read(&root);
+    match &found {
+        Some(reference) => println!("{reference}"),
+        None => eprintln!("levi: no levi is open in {}", root.display()),
+    }
+    Ok(found.is_some())
+}
+
 fn try_main(rev: Option<String>, pick_context: bool) -> Result<Exit> {
     let root = git::preflight(&std::env::current_dir()?, rev.as_deref())?;
     let mut app = App::new();
@@ -228,8 +258,9 @@ fn try_main(rev: Option<String>, pick_context: bool) -> Result<Exit> {
         bail!("needs a terminal (it draws on stderr, which isn't one)");
     }
     let mut terminal = init().context("needs a terminal")?;
-    let result = run(&mut terminal, &mut app, root);
+    let result = run(&mut terminal, &mut app, root.clone());
     restore();
+    focus::remove(&root);
 
     result?;
     Ok(app.exit.unwrap_or(Exit::Quit))
@@ -249,6 +280,8 @@ fn run(terminal: &mut Tui, app: &mut App, root: PathBuf) -> Result<()> {
     let watcher = worker::Watcher::spawn(root.clone(), rev, working, tx.clone());
     let code = worker::CodeSearcher::new(root.clone(), tx.clone());
     let diffs = worker::spawn_diff(root.clone(), tx);
+    // What `levi --focus` last got to read.
+    let mut shown = None;
 
     while app.exit.is_none() {
         if let Some(req) = app.take_log_request() {
@@ -283,6 +316,11 @@ fn run(terminal: &mut Tui, app: &mut App, root: PathBuf) -> Result<()> {
             watcher.poke();
         }
         terminal.draw(|frame| ui::draw(frame, app))?;
+        // After the draw, which measures the diff pane the lines come from.
+        if let Some(reference) = app.context().filter(|r| shown.as_ref() != Some(r)) {
+            focus::write(&root, &reference);
+            shown = Some(reference);
+        }
         // Sleep until something happens, or until a pending code search is due.
         let msg = match app.deadline() {
             Some(due) => match rx.recv_timeout(due.saturating_duration_since(Instant::now())) {

@@ -7,6 +7,16 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+### Added
+
+- `levi --focus` prints what the levi open in this repository shows: the commit, the file and
+  the lines in view or under a drag, like `--pick-context`. Tell your agent "look at what I
+  have open in levi" and it runs that. levi keeps the note in the temp directory, never in the
+  repository, and `--focus` exits 1 when no levi is open there.
+- A tmux plugin, like the herdr one: `prefix G` opens levi in a popup over your agent's pane,
+  and `Enter` types the reference into it, unsent. Install it with TPM
+  (`set -g @plugin 'rsdlt/levi'`) or `run-shell levi.tmux`; `@levi-key` picks another key.
+
 ## [0.19.0] - 2026-10-20
 
 ### Added
