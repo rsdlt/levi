@@ -7,6 +7,8 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-10-21
+
 ### Added
 
 - `levi --focus` prints what the levi open in this repository shows: the commit, the file and
@@ -254,7 +256,8 @@ First release.
 - `--help` and `--version`.
 - `cargo deny` configuration for license, advisory and source checks.
 
-[Unreleased]: https://github.com/rsdlt/levi/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/rsdlt/levi/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/rsdlt/levi/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/rsdlt/levi/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/rsdlt/levi/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/rsdlt/levi/compare/v0.16.0...v0.17.0
