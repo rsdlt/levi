@@ -1,40 +1,72 @@
 # levi in Neovim
 
-This puts levi in a floating window on `<leader>gl` (Neovim 0.11 or newer). Pick a commit with
-`Enter` and it opens in a new tab with `git show`. Inside the window, `C-o` opens files in
-this same Neovim, in a new tab.
+> *You live in that editor. Fine. levi comes to you.*
 
-Add it to your config, in `init.lua` or a file under `plugin/`:
+This plugin opens [levi](https://github.com/rsdlt/levi) in a floating window over Neovim, in
+the repository of the file you're in. It has two orders:
 
-```lua
--- levi in a floating window (Neovim 0.11+). Enter on a commit shows it in a new tab;
--- Ctrl-O inside levi opens files in this Neovim.
-vim.keymap.set("n", "<leader>gl", function()
-  local picked = vim.fn.tempname()
-  local buf = vim.api.nvim_create_buf(false, true)
-  vim.bo[buf].bufhidden = "wipe"
-  local width, height = math.floor(vim.o.columns * 0.9), math.floor(vim.o.lines * 0.85)
-  local win = vim.api.nvim_open_win(buf, true, {
-    relative = "editor", border = "rounded", width = width, height = height,
-    col = math.floor((vim.o.columns - width) / 2), row = math.floor((vim.o.lines - height) / 2),
-  })
-  -- levi draws on stderr, so its stdout, the picked sha, can go to a file.
-  vim.fn.jobstart("levi > " .. vim.fn.shellescape(picked), {
-    term = true,
-    on_exit = function(_, code)
-      if vim.api.nvim_win_is_valid(win) then vim.api.nvim_win_close(win, true) end
-      local sha = code == 0 and vim.fn.readfile(picked)[1]
-      vim.fn.delete(picked)
-      if not sha then return end
-      vim.cmd("tabnew | setlocal buftype=nofile bufhidden=wipe filetype=git")
-      vim.api.nvim_buf_set_lines(0, 0, -1, false, vim.fn.systemlist({ "git", "show", sha }))
-      -- Or, with diffview.nvim: vim.cmd("DiffviewOpen " .. sha .. "^!")
-    end,
-  })
-  vim.cmd.startinsert()
-end, { desc = "levi: browse commits" })
+- **`:Levi`** shows the commit you pick, in a new tab: with
+  [diffview.nvim](https://github.com/sindrets/diffview.nvim) when it's installed, as
+  `git show` otherwise.
+- **`:LeviSend`** hands what you found to your coding agent. Run the agent in a Neovim
+  terminal, find the commit, the file and the lines you mean, and press `Enter`. levi types a
+  reference to them into the agent's input. He doesn't send it. You finish the question.
+
+```
+In commit d3a93ab ("Stack the lists above the diff on narrow terminals"), src/ui.rs lines 27-40: why 120?
 ```
 
-levi draws on stderr, so the snippet sends its stdout, the picked sha, to a temporary file and
-reads it back when levi exits. With diffview.nvim, swap the last lines of `on_exit` for the
-`DiffviewOpen` line in the comment.
+## Enlist
+
+You need levi 0.16 or newer on your `PATH` and Neovim 0.11 or newer.
+
+```sh
+brew install rsdlt/tap/levi        # or: cargo install levi-git
+```
+
+The plugin is in levi's own repository. With [lazy.nvim](https://github.com/folke/lazy.nvim):
+
+```lua
+{
+  "rsdlt/levi",
+  cmd = { "Levi", "LeviSend" },
+  keys = {
+    { "<leader>gl", "<cmd>Levi<cr>", desc = "levi: browse commits" },
+    { "<leader>ga", "<cmd>LeviSend<cr>", desc = "levi: hand a commit to the agent" },
+  },
+}
+```
+
+With Neovim's built-in `vim.pack` (0.12), add `vim.pack.add({ "https://github.com/rsdlt/levi" })`
+and the same keys with `vim.keymap.set`. The plugin binds no keys of its own.
+
+## Orders
+
+`:Levi` and `:LeviSend` take one revision, like levi does: `:Levi main..HEAD` shows only what
+your branch adds to main.
+
+In the window, levi works as everywhere else: type to search, `Tab` between panes, `C-o` to
+open a file at the line you're reading, in a new tab of this same Neovim. `Esc` closes the
+window and does nothing.
+
+`:LeviSend` types into the terminal you're in, or into the one you used last when you're in a
+file. It works with any agent that runs in a Neovim terminal, and with plugins that open the
+agent in one. When that terminal is on screen, levi puts you in it, ready to type; when it's
+hidden, he types anyway and tells you.
+
+From Lua, `require("levi").open(rev)` and `require("levi").send(rev)` do the same, `rev`
+optional.
+
+## Fine print
+
+- levi runs in the repository of the file you're in, or in Neovim's working directory when
+  you're not in a file.
+- A reference is never sent, so a wrong terminal costs a `C-u`.
+- The lines are the ones in view, or the ones under your drag selection.
+- If levi can't start, say outside a repository, the window stays up with his reason. `q`
+  closes it.
+- Under the hood it's `levi --pick-context` and `chansend()`: see
+  [lua/levi/init.lua](../lua/levi/init.lua) to build your own variations.
+
+The rest of levi's orders, keys and search syntax are in the
+[main README](../README.md).
