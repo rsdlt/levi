@@ -198,13 +198,27 @@ In your agent's pane, press `prefix G`. levi pops up over it, in the pane's dire
 types the reference into the pane, unsent. See [tmux/README.md](tmux/README.md) for another
 key, or for tmux without TPM.
 
+### With Neovim
+
+Run your agent in a Neovim terminal, and the plugin in this repository hands it what you
+find. With [lazy.nvim](https://github.com/folke/lazy.nvim):
+
+```lua
+{ "rsdlt/levi", keys = { { "<leader>ga", "<cmd>LeviSend<cr>" } } }
+```
+
+`:LeviSend` opens levi in a floating window; `Enter` types the reference into the agent's
+terminal, unsent. `:Levi` shows the commit you pick instead. See
+[docs/neovim.md](docs/neovim.md).
+
 ## Joint operations
 
 `C-o` opens the file in your editor at the line you're reading. Quit the editor and levi waits
 where you left him. Inside Neovim's terminal, the file opens in a new tab of that Neovim. A
 file you deleted since then opens read-only, as it was in that commit.
 
-To run levi in a floating window inside Neovim, see [docs/neovim.md](docs/neovim.md).
+To run levi in a floating window inside Neovim, `:Levi` does it: see
+[docs/neovim.md](docs/neovim.md).
 
 ## Field report
 

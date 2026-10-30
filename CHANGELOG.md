@@ -7,6 +7,13 @@ the search commands, the sha printed on stdout and the exit codes.
 
 ## [Unreleased]
 
+### Added
+
+- A Neovim plugin, in this repository: `:Levi` opens levi in a floating window and shows the
+  commit you pick in a new tab (in diffview.nvim when it's installed), and `:LeviSend` types
+  a reference to what you picked into your agent's Neovim terminal, unsent, like the herdr
+  and tmux plugins. Install `rsdlt/levi` with lazy.nvim or `vim.pack`; Neovim 0.11 or newer.
+
 ## [0.20.0] - 2026-10-21
 
 ### Added

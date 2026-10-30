@@ -422,10 +422,17 @@ next commit (killing its git), and late messages from old generations are droppe
 - `--all` branches.
 - Optional `delta` piping / syntax highlighting.
 - Sending what's on screen to a coding agent. Done three ways. Pushed: `levi --pick-context`
-  plus the herdr plugin in `herdr/` and the tmux plugin (`levi.tmux`, the TPM entry point, and
-  `tmux/`), which type the pick into the agent's input, unsent (herdr and tmux can send text
-  to a pane, which no agent offers on its own). Pulled: `levi --focus` (see CLI behaviour),
-  for any agent, in or out of a multiplexer.
+  plus the herdr plugin in `herdr/`, the tmux plugin (`levi.tmux`, the TPM entry point, and
+  `tmux/`) and the Neovim plugin (`plugin/levi.lua` and `lua/levi/`, at the root so plugin
+  managers install the repository as-is), which type the pick into the agent's input, unsent
+  (herdr, tmux and Neovim's `chansend()` can send text to a terminal, which no agent offers
+  on its own). Pulled: `levi --focus` (see CLI behaviour), for any agent, in or out of a
+  multiplexer.
+  - **Neovim.** `:LeviSend` types into the terminal buffer you're in, else the live one with
+    the latest `lastused`, picked before levi's own float (a terminal too) opens. `:Levi`
+    replaces the old paste-in snippet: Enter shows the commit, in diffview.nvim when it's
+    there (not for a root commit, which has no `sha^!` range). levi's stdout goes to a temp
+    file through the shell, since a `term` job has one pty for both streams.
   - **tmux.** `prefix G` (tmux 3.8 binds `g` to its move table; `@levi-key` changes it) runs
     `display-popup -E -d '#{pane_current_path}'`. tmux doesn't expand formats in the popup's
     command, only in `-d`, so the script asks `tmux display-message -p '#{pane_id}'`, which
